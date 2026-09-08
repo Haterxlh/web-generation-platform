@@ -55,3 +55,22 @@ Thumbs.db
 *.tmp
 *.swp
 *.swo
+
+# ========== Python 相关 ==========
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/*.so
+**/.pytest_cache/
+**/.coverage
+**/htmlcov/
+**/.tox/
+**/.mypy_cache/
+**/.dmypy.json
+**/.dm-dmypy.json
+**/*.log
+**/.env
+**/.venv
+**/venv/
+**/ENV/
+**/env/
