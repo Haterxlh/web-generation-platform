@@ -1,13 +1,16 @@
 {
 	"folders": [
 		{
+			"name": "ws02_web-generation-platform",
 			"path": "."
 		},
 		{
-			"path": "backend"
+			"name": "backend-uv-fastapi",
+			"path": "backend-uv-fastapi"
 		},
 		{
-			"path": "backend-uv-fastapi"
+			"name": "backend",
+			"path": "backend"
 		}
 	],
 	"settings": {
