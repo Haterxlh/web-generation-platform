@@ -31,9 +31,17 @@
 - `vite.config.js`：构建配置；`eslint.config.js`：ESLint 配置
 
 ### 后端 `backend-uv-fastapi/`
-- `src/backend_uv_fastapi/main.py`：FastAPI 入口（`app = FastAPI()`）与现有 Pydantic 模型
-- 需求简单时可直接在 `main.py` 内新增路由与模型；随着接口增多，按功能拆分到 `src/backend_uv_fastapi/` 下的子模块（如 `routers/`、`models.py`）并保持入口清晰
-- 模块名：包目录使用 `snake_case`（如 `backend_uv_fastapi`）
+- `app/main.py`：FastAPI 应用入口（`app = FastAPI()`）与现有示例 Pydantic 模型（入口由 `pyproject.toml` 的 `[tool.fastapi]` 指向 `app.main:app`）
+- 分层结构（调用方向：`api` → `services` → `repositories`）：
+    - `app/api/`：API 路由层（表现层）
+    - `app/core/`：核心配置与工具（配置、数据库会话、依赖注入）
+    - `app/models/`：数据模型层（Pydantic 模型与 ORM 实体）
+    - `app/repositories/`：数据访问层（CRUD 操作）
+    - `app/services/`：业务逻辑层
+    - `app/utils/`：通用工具函数
+- `tests/`：pytest 测试目录，运行 `uv run pytest`；测试用 dev 依赖在 `pyproject.toml` 的 `[dependency-groups]` 中声明
+- 需求简单时可先直接在 `app/main.py` 内新增路由与模型；随着接口增多，按上述分层拆分到对应目录并保持入口清晰
+- 命名：包目录使用 `snake_case`
 
 ## 4. 编码规范与风格 (Code Style & Conventions)
 
@@ -65,7 +73,7 @@
 
 ## 7. AI 助手工作流 (Agent Workflow)
 1. **理解需求**：明确要修改或新增的功能（前端页面或 FastAPI 接口）。
-2. **定位代码**：前端在 `frontend-react/src`；后端在 `backend-uv-fastapi/src`（入口 `main.py`）。涉及 `backend/`（废弃 Spring Boot）的需求一律视为无效，不予处理。
+2. **定位代码**：前端在 `frontend-react/src`；后端在 `backend-uv-fastapi/app`（入口 `app/main.py`，分层见 §3）。涉及 `backend/`（废弃 Spring Boot）的需求一律视为无效，不予处理。
 3. **编写/修改代码**：遵循上述编码规范；改动依赖时同步 `uv.lock` / `package-lock.json`。
 4. **本地验证**：提供用于测试的 curl 命令（FastAPI 默认 `http://127.0.0.1:8000`）或测试用例。
 5. **提交代码**：按照规范的格式得到提交信息，待用户确认后再提交。

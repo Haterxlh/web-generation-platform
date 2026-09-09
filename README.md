@@ -24,10 +24,12 @@ web-generation-platform/
 │   ├── package.json
 │   └── vite.config.js
 ├── backend-uv-fastapi/          # 后端（FastAPI，uv 管理）
-│   ├── pyproject.toml           # 依赖与入口配置
+│   ├── app/                     # 主应用（api/core/models/repositories/services/utils 分层）
+│   │   └── main.py              # FastAPI 应用入口（app）
+│   ├── tests/                   # pytest 测试目录
+│   ├── pyproject.toml           # 依赖、入口与 pytest 配置
 │   ├── uv.lock                  # 依赖锁文件
-│   └── src/backend_uv_fastapi/
-│       └── main.py              # FastAPI 应用入口（app）
+│   └── README.md                # 后端项目结构说明
 ├── sql/                         # 数据库脚本（历史 MySQL 脚本）
 ├── backend/                     # ⚠️ 已废弃（原 Spring Boot 后端，本地遗留，不入库）
 ├── AGENTS.md                    # AI 编程助手上下文说明
