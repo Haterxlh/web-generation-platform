@@ -17,12 +17,14 @@
 
 ```
 web-generation-platform/
-├── frontend-react/              # 前端（React + Vite）
-│   ├── src/                     # 源码（main.jsx 入口、App.jsx 根组件、样式）
+├── frontend-react/              # 前端（React 19 + TypeScript + Vite 8）
+│   ├── src/                     # 源码（分层：api/pages/components/hooks/types/utils/styles）
+│   │   └── main.tsx             # 应用入口
 │   ├── public/                  # 公共静态资源
 │   ├── index.html
 │   ├── package.json
-│   └── vite.config.js
+│   ├── tsconfig*.json
+│   └── vite.config.ts           # 别名 @ 与 /api 开发代理
 ├── backend-uv-fastapi/          # 后端（FastAPI，uv 管理）
 │   ├── app/                     # 主应用（api/core/models/repositories/services/utils 分层）
 │   │   └── main.py              # FastAPI 应用入口（app）

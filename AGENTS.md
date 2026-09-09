@@ -4,7 +4,7 @@
 本仓库用于**复刻"Web 生成平台"**：帮助用户通过 AI 快速生成 Web 应用。
 
 技术路线（**当前与后续开发均以此为准**）：
-- **frontend-react**：前端 —— React 19 + Vite 8（npm、ESLint）
+- **frontend-react**：前端 —— React 19 + TypeScript + Vite 8（React Router、npm、ESLint）
 - **backend-uv-fastapi**：后端 —— Python >= 3.12 + uv + FastAPI
 
 > ⚠️ 遗留说明：仓库中曾规划 Spring Boot + LangChain4j 后端（`backend/` 目录，含 Java/Maven 代码），该方案**已废弃**。`backend/` 已从 git 移除跟踪并在根 `.gitignore` 中忽略，仅本地保留作为参考。**不要**在 `backend/` 上继续开发，也不要将其重新纳入提交。
@@ -12,9 +12,10 @@
 ## 2. 常用命令 (Common Commands)
 
 ### 前端（在 `frontend-react/` 下执行）
-- 安装依赖：`npm install`
-- 本地开发：`npm run dev`
-- 生产构建：`npm run build`（产物输出到 `dist/`，不入库）
+- 安装依赖：`npm install`（新增依赖后提交 `package-lock.json`）
+- 本地开发：`npm run dev`（开发代理 `/api → http://127.0.0.1:8000`，见 `vite.config.ts`）
+- 生产构建：`npm run build`（先 `tsc` 类型检查再出产物 `dist/`，不入库）
+- 类型检查：`npm run typecheck`
 - 本地预览构建产物：`npm run preview`
 - 代码检查：`npm run lint`
 
@@ -26,9 +27,15 @@
 ## 3. 目录与代码定位
 
 ### 前端 `frontend-react/`
-- `src/main.jsx`：应用入口；`src/App.jsx`：根组件；`src/index.css` / `src/App.css`：样式；`src/assets/`：静态图片
+- `src/main.tsx`：应用入口；`src/App.tsx`：根组件（仅路由装配，`react-router-dom`）
+- 分层结构（详见 `frontend-react/README.md`）：
+    - `src/pages/`：路由级页面（每页一个目录，如 `Home/`、`Generate/`）
+    - `src/api/`：接口调用层（`http.ts` 统一请求封装，一个后端路由模块对应一个文件）
+    - `src/components/layout|common`：布局与可复用 UI 组件
+    - `src/hooks/`：通用自定义 hooks；`src/types/`：与后端 models 对齐的数据类型
+    - `src/utils/`：工具函数；`src/styles/global.css`：全局样式与设计变量
 - `public/`：公共静态资源（favicon、icons 等）
-- `vite.config.js`：构建配置；`eslint.config.js`：ESLint 配置
+- 配置：`vite.config.ts`（别名 `@/ → src/`、`/api` 开发代理）、`eslint.config.js`、`tsconfig*.json`
 
 ### 后端 `backend-uv-fastapi/`
 - `app/main.py`：FastAPI 应用入口（`app = FastAPI()`）与现有示例 Pydantic 模型（入口由 `pyproject.toml` 的 `[tool.fastapi]` 指向 `app.main:app`）
@@ -52,9 +59,10 @@
 - 如后续接入数据库：一律使用 ORM（如 SQLAlchemy）或参数化语句，**禁止拼接 SQL 字符串**
 
 ### React / 前端
-- 组件文件名与导出使用 `PascalCase`（如 `App.jsx`）；变量与函数使用 `camelCase`
-- 组件采用函数组件 + Hooks 写法，逻辑写在 `.jsx` 中
-- 样式使用普通 CSS（`index.css` / `App.css`），暂未引入 CSS 框架
+- 组件文件与导出使用 `PascalCase`（`.tsx`，如 `HomePage.tsx`）；变量与函数使用 `camelCase`；常量 `UPPER_SNAKE_CASE`
+- 组件采用函数组件 + Hooks 写法；与后端交互的类型放 `src/types/`（字段与后端 Pydantic 保持一致）
+- 类型导入使用 `import type`；路径别名 `@/` 指向 `src/`
+- 样式：设计变量统一在 `src/styles/global.css`，页面样式可同目录建 `.module.css` 或组件内联类
 
 ## 5. 敏感信息与安全规则 (Security)
 - 数据库密码、API Key 等敏感信息**严禁硬编码**：通过环境变量注入，或放在本地配置文件（如 `.env`、`application-local.yml`），并确保被 `.gitignore` 忽略、不进 git

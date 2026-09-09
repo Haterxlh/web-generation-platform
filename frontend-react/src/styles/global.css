@@ -1,0 +1,118 @@
+/* ===== 全局样式 / 设计变量 ===== */
+:root {
+  --color-bg: #f7f7fb;
+  --color-surface: #ffffff;
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-text: #1f2333;
+  --color-text-muted: #6b7280;
+  --color-border: #e5e7eb;
+
+  --radius: 10px;
+  --shadow-sm: 0 1px 3px rgba(17, 24, 39, 0.08);
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== 布局骨架 ===== */
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 24px;
+  height: 56px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-logo {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.app-nav {
+  display: flex;
+  gap: 4px;
+}
+
+.nav-link {
+  padding: 6px 14px;
+  border-radius: 8px;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  font-size: 14px;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.nav-link:hover {
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+.nav-link.active {
+  color: var(--color-primary);
+  font-weight: 600;
+  background: rgba(79, 70, 229, 0.08);
+}
+
+.app-main {
+  flex: 1;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.app-footer {
+  padding: 16px 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+/* ===== 页面通用 ===== */
+.page h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+}
+
+.page-desc {
+  margin: 0 0 16px;
+  color: var(--color-text-muted);
+}
+
+.page p {
+  line-height: 1.7;
+}
