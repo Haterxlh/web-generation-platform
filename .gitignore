@@ -32,6 +32,13 @@ build/
 ### VS Code ###
 .vscode/
 
+### Visual Studio (合并自 frontend-react/.gitignore) ###
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
 # 本地配置文件（敏感信息）
 application-local.yml
 application-local.properties
@@ -41,13 +48,23 @@ bootstrap-local.yml
 logs/
 tmps/
 
-# ========== 前端相关 (Vue / Node) ==========
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-frontend/*.log
-frontend/.env.local
-frontend/.env.*.local
+# ========== 前端相关 (Node / Vite / React) ==========
+# 合并自 frontend-react/.gitignore
+# 依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+# Vite 缓存
+.vite/
+# 本地环境配置与调试日志
+*.local
+.env.local
+.env.*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
 # ========== 操作系统临时文件 ==========
 .DS_Store

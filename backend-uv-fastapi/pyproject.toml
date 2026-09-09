@@ -7,7 +7,9 @@ authors = [
     { name = "haterbill", email = "1554288632@qq.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi[standard]>=0.141.1",
+]
 
 [project.scripts]
 backend-uv-fastapi = "backend_uv_fastapi:main"
@@ -15,3 +17,6 @@ backend-uv-fastapi = "backend_uv_fastapi:main"
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.fastapi]
+entrypoint = "src.backend_uv_fastapi.main:app"
