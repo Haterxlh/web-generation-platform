@@ -1,8 +1,0 @@
-spring:
-  application:
-    name: web_generation_platform
-  # ========== 激活 local 配置文件 ==========
-  profiles:
-    active: local   # 这句话告诉 Spring：去加载 application-local.yml
-  # ========== 数据库连接配置 ==========
-  # 详见application-local.yml或application-prod.yml中的数据库连接配置

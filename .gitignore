@@ -4,6 +4,10 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+# ========== 已废弃（backend：原 Spring Boot + LangChain4j 后端）==========
+# 技术路线已切换为 React + FastAPI；backend/ 仅本地保留，不再纳入版本控制
+backend/
+
 ### STS ###
 .apt_generated
 .classpath
