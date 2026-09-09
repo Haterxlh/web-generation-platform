@@ -9,8 +9,8 @@
 			"path": "backend-uv-fastapi"
 		},
 		{
-			"name": "backend",
-			"path": "backend"
+			"name": "frontend-react",
+			"path": "frontend-react"
 		}
 	],
 	"settings": {
