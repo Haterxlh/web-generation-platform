@@ -44,6 +44,8 @@ api (路由) → services (业务逻辑) → repositories (数据访问) → 数
 
 - Python >= 3.12
 - [uv](https://docs.astral.sh/uv/)（包与虚拟环境管理）
+- Python 虚拟环境（.venv）
+- Python 解释器（.venv/Scripts/python）
 
 ## 快速启动
 
