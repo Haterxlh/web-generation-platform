@@ -15,12 +15,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // 开发环境把 /api 请求转发到 FastAPI 后端（backend-uv-fastapi，默认 8000），避免跨域
-      // 若后端统一加 /api 前缀，去掉 rewrite 即可
+      // 开发环境把 /api 请求原样转发到 FastAPI 后端（backend-uv-fastapi，默认 8000），避免跨域
+      // 后端路由统一带 /api 前缀（app/main.py 中 include_router(..., prefix="/api")），因此不做 rewrite
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },

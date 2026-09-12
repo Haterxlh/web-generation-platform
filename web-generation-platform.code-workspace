@@ -1,20 +1,46 @@
 {
-	"folders": [
-		{
-			"name": "ws02_web-generation-platform",
-			"path": "."
-		},
-		{
-			"name": "backend-uv-fastapi",
-			"path": "backend-uv-fastapi"
-		},
-		{
-			"name": "frontend-react",
-			"path": "frontend-react"
-		}
-	],
-	"settings": {
-		"java.compile.nullAnalysis.mode": "automatic",
-		"java.configuration.updateBuildConfiguration": "automatic"
-	}
+  "folders": [
+    { "name": "ws02_web-generation-platform", "path": "." },
+    { "name": "backend-uv-fastapi", "path": "backend-uv-fastapi" },
+    { "name": "frontend-react", "path": "frontend-react" }
+  ],
+  "settings": {
+    "java.compile.nullAnalysis.mode": "automatic",
+    "java.configuration.updateBuildConfiguration": "automatic",
+
+    "editor.formatOnSave": true,
+    "editor.detectIndentation": false,
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true,
+
+    "[typescript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode",
+      "editor.tabSize": 2,
+      "editor.insertSpaces": true
+    },
+    "[typescriptreact]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode",
+      "editor.tabSize": 2,
+      "editor.insertSpaces": true
+    },
+    "[javascript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode",
+      "editor.tabSize": 2,
+      "editor.insertSpaces": true
+    },
+    "[javascriptreact]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode",
+      "editor.tabSize": 2,
+      "editor.insertSpaces": true
+    },
+    "[css]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+    "[html]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+    "[json]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+    "[jsonc]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+    "[python]": { "editor.tabSize": 4, "editor.insertSpaces": true },
+
+    "python.terminal.executeInFileDir": false,
+    "yaml.schemaStore.enable": false,
+    "terminal.integrated.cwd": "${workspaceFolder:backend-uv-fastapi}"
+  }
 }

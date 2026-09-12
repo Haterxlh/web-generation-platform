@@ -26,9 +26,9 @@
 - **功能范围**：用户注册、登录签发 JWT、携带 token 获取当前用户
 - **已交付内容**：
   - 接口：
-    - `POST /api/users/register` —— 注册（账号查重，409）
-    - `POST /api/users/login` —— 登录（返回 JWT + 用户信息）
-    - `GET /api/users/current` —— 获取当前登录用户（Bearer token 校验）
+    - `POST /api/user/register` —— 注册（账号查重，409）
+    - `POST /api/user/login` —— 登录（返回 JWT + 用户信息）
+    - `GET /api/user/current` —— 获取当前登录用户（Bearer token 校验）
   - 核心文件：
     - `app/models/user.py`（User ORM 实体，11 列，映射 `user` 表）
     - `app/schemas/user_schemas.py`（RegisterRequest / LoginRequest / UserResponse / LoginResponse，响应白名单不含密码）

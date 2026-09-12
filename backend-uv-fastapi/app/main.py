@@ -6,6 +6,6 @@ from app.api.user import router as user_router
 
 app = FastAPI(title="Web 生成平台", description="Web 生成平台后端 API")
 
-# 登记用户模块路由：prefix=/api 叠加路由自身的 /users
-# → 实际访问路径为 /api/users/register、/api/users/login、/api/users/current
+# 登记用户模块路由：prefix=/api 叠加路由自身的 /user
+# → 实际访问路径为 /api/user/register、/api/user/login、/api/user/current
 app.include_router(user_router, prefix="/api")

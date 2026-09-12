@@ -10,9 +10,9 @@ from app.models.user import User
 from app.schemas.user_schemas import LoginRequest, LoginResponse, RegisterRequest, UserResponse
 from app.services.user_service import UserService
 
-# prefix: 本模块所有接口统一挂在 /users 下
+# prefix: 本模块所有接口统一挂在 /user 下
 # tags:   让 /docs 文档按"用户"分组显示
-router = APIRouter(prefix="/users", tags=["用户"])
+router = APIRouter(prefix="/user", tags=["用户"])
 
 
 @router.post("/register", response_model=UserResponse, summary="注册新用户")
