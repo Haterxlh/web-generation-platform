@@ -1,5 +1,5 @@
-# app/utils/create_all_table.py —— 开发期建表脚本
-# 运行：python -m app.utils.create_all_table （在 backend-uv-fastapi 目录下）
+# app/utils/db/create_all_table.py —— 开发期建表脚本
+# 运行：uv run python -m app.utils.db.create_all_table （在 backend-uv-fastapi 目录下）
 
 from sqlalchemy import text
 from app.core.mysql_db import MysqlBase, mysql_engine
@@ -11,6 +11,7 @@ from app.core.mysql_db import MysqlBase, mysql_engine
 没有这行，metadata 就是空的，create_all 无事可做
 """
 import app.models.user  # noqa: F401  （noqa 表示"这行暂时没用变量，别报警告"）
+import app.models.generation_task  # noqa: F401  ← 新增：注册生成任务模型
 
 # 创建所有"数据库中还不存在"的表（已存在的表不会动，可安全重复运行）
 MysqlBase.metadata.create_all(bind=mysql_engine)

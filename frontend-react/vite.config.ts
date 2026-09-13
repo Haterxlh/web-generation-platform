@@ -21,6 +21,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
+      // 查看生成好的网页
+      '/preview': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

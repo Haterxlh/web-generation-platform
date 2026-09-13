@@ -4,7 +4,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.utils.parse_token import get_current_user
+from app.utils.jwt.parse_token import get_current_user
 from app.core.mysql_db import get_mysql_db
 from app.models.user import User
 from app.schemas.user_schemas import LoginRequest, LoginResponse, RegisterRequest, UserResponse

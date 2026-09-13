@@ -1,4 +1,4 @@
-# app/utils/parse_token.py —— FastAPI 依赖：把请求头里的 token 变成"当前登录用户"
+# app/utils/jwt/parse_token.py —— FastAPI 依赖：把请求头里的 token 变成"当前登录用户"
 # 作用：所有"需要登录才能访问"的接口，参数里写 Depends(get_current_user)，
 #        FastAPI 就会自动先执行这里的校验，把用户对象交给接口。
 
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.mysql_db import get_mysql_db
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
-from app.utils.security import decode_token
+from app.utils.jwt.security import decode_token
 
 # HTTPBearer：告诉 FastAPI 这个接口要求请求头带 Authorization: Bearer <token>
 bearer_scheme = HTTPBearer()

@@ -1,5 +1,5 @@
-# app/utils/security.py —— 安全工具箱：密码加密 + JWT 签发/解析
-# 为什么放 utils：这是与业务无关的通用函数（加密、token），哪里都能用
+# app/utils/jwt/security.py —— 安全工具箱：密码加密 + JWT 签发/解析
+# 为什么放 utils/jwt：认证相关（密码哈希、token 签发/校验）统一收在这个子包里
 
 from datetime import datetime, timedelta, timezone
 
@@ -80,3 +80,52 @@ def decode_token(token: str) -> int:
     """
     payload = jwt.decode(token, jwt_settings.jwt_secret, algorithms=[jwt_settings.jwt_algorithm])
     return int(payload["sub"])
+
+# ========== 预览票据（只用于 /preview 静态资源） ==========
+
+def create_preview_ticket(user_id: int, task_uuid: str) -> str:
+    """签发"预览票据"：短期的、且与某一次任务绑定的 JWT。
+
+    为什么不直接拿登录 token 当预览凭证：
+    - 票据把 user_id 与 task_uuid **绑死** —— 拿 A 任务的票据打不开 B 任务；
+    - 有效期短（默认 30 分钟）；
+    - 带 scope 标记，用途单一，不会和登录态混淆。
+
+    Args:
+        user_id: 用户 id。
+        task_uuid: 任务唯一标识。
+
+    Returns:
+        预览票据（JWT 字符串）。
+    """
+    expire_at = datetime.now(timezone.utc) + timedelta(minutes=jwt_settings.preview_ticket_minutes)
+    payload = {
+        "sub": str(user_id),
+        "task_uuid": task_uuid,
+        "scope": "preview",
+        "exp": expire_at,
+    }
+    return jwt.encode(payload, jwt_settings.jwt_secret, algorithm=jwt_settings.jwt_algorithm)
+
+
+def decode_preview_ticket(token: str) -> dict | None:
+    """解析预览票据。
+
+    注意与 decode_token 的差别：这里**不抛异常**，失败一律返回 None。
+    因为调用方是 ASGI 层，它只想知道"放行还是拒绝"，不需要区分过期/篡改/格式错。
+
+    Args:
+        token: 预览票据。
+
+    Returns:
+        载荷字典（含 sub / task_uuid）；无效、过期或 scope 不符时返回 None。
+    """
+    try:
+        payload = jwt.decode(
+            token, jwt_settings.jwt_secret, algorithms=[jwt_settings.jwt_algorithm]
+        )
+    except jwt.PyJWTError:
+        return None
+    if payload.get("scope") != "preview":
+        return None
+    return payload

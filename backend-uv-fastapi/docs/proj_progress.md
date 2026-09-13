@@ -1,7 +1,7 @@
 # 项目进度 —— backend-uv-fastapi
 
 > 本文件用于跨会话同步开发进度。每次总结进度时按此格式更新。
-> 最近更新时间：2026-09-10
+> 最近更新时间：2026-09-12
 
 ## 1. 模块进度
 
@@ -12,11 +12,11 @@
   - 核心文件：
     - `app/core/mysql_config.py`（读取 `.env` 的 MySQL 配置并拼连接串）
     - `app/core/mysql_db.py`（engine / sessionmaker / `MysqlBase` 基类 / `get_mysql_db()` 依赖）
-    - `app/utils/create_all_table.py`（开发期建表脚本，需先 import 各模型）
+    - `app/utils/db/create_all_table.py`（开发期建表脚本，需先 import 各模型）
   - `.env`：`MYSQL_HOST / MYSQL_PORT / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DB_NAME`（已被 .gitignore 忽略）
 - **关键决策**：
   - 连接串走环境变量，敏感信息不进代码/git
-  - `extra="ignore"` 允许一份 `.env` 被多个 Settings 类共享
+  - `extra="ignore"` 允许一份 `.env` 被多个 Settings 类共享（该配置现已收敛到 `settings_base.py`）
   - `Base` 命名为 `MysqlBase`（用户自定义）
 - **验证情况**：已实测连接本机 MySQL 成功（`SELECT 1` 通过）；`wgp_db` 库连通
 - **待办与遗留**：无
@@ -32,9 +32,9 @@
   - 核心文件：
     - `app/models/user.py`（User ORM 实体，11 列，映射 `user` 表）
     - `app/schemas/user_schemas.py`（RegisterRequest / LoginRequest / UserResponse / LoginResponse，响应白名单不含密码）
-    - `app/utils/security.py`（bcrypt 哈希、JWT 签发/解析）
-    - `app/core/jwt_config.py`（JWT_SECRET / HS256 / 过期时间）
-    - `app/utils/parse_token.py`（`get_current_user` 登录校验依赖）
+    - `app/utils/jwt/security.py`（bcrypt 哈希、JWT 签发/解析；**本次会话已从 `app/utils/` 迁入 `jwt/` 子包**）
+    - `app/core/jwt_config.py`（JWT_SECRET / HS256 / 过期时间 / 预览票据有效期）
+    - `app/utils/jwt/parse_token.py`（`get_current_user` 登录校验依赖；同上已迁入 `jwt/`）
     - `app/repositories/user_repository.py`（create / get_by_user_account / get_by_id）
     - `app/services/user_service.py`（register / login 业务规则）
     - `app/api/user.py`（用户路由）
@@ -47,28 +47,109 @@
   - 逻辑删除：所有查询过滤 `is_delete == 0`
   - ORM 列名显式映射驼峰数据库列（`mapped_column("userAccount", ...)`）
   - docstring 统一 Google 风格（用户要求）
-  - 文件名用户自定义：`user_schemas.py`、`parse_token.py`（未严格按 README 默认命名）
-- **验证情况**：端到端 5 项验证全部通过（注册 200 无密码字段 / 重复注册 409 / 登录 200 拿 token / 带 token 访问 current 200 / 库中密码为 `$2b$12$...` 哈希）
+- **验证情况**：端到端 5 项验证全部通过（注册 200 无密码字段 / 重复注册 409 / 登录 200 拿 token / 带 token 访问 current 200 / 库中密码为 `$2b$12$...` 哈希）；本次重组 utils 后再次验证 `import app.main` 与登录链路正常
 - **待办与遗留**：
   - `tests/` 尚不完整：`test_smoke.py` 断言根路由返回 `{"Hello": "World"}`，但 `main.py` 已删除该示例路由，**该用例预计失败**；`test_user_service.py` 无断言。需补全测试并跑 `uv run pytest`
-  - 前端对接未开始（注册/登录页面、token 存储、请求拦截器）
+  - 前端用户模块**已对接**（见 `frontend-react/docs/proj_progress.md`）
   - 模型字段后续变更时需引入 Alembic 迁移（`create_all` 不能改已存在的表）
-  - `get_current_user` 目前位于 `app/utils/parse_token.py`，按分层约定属接口层依赖，后续可评估是否迁回 `api/deps.py`
+  - `get_current_user` 目前位于 `app/utils/jwt/parse_token.py`，按分层约定属接口层依赖，后续可评估是否迁回 `api/deps.py`
+
+### 模块：配置与目录规范（Settings 基类 + utils 子包化）
+- **状态**：已完成
+- **功能范围**：统一 `.env` 定位与读取规则；把 `app/utils/` 按用途拆分为子包
+- **已交付内容**：
+  - 核心文件：
+    - `app/core/settings_base.py`（`BASE_DIR` / `ENV_FILE` / `AppSettings` 基类：`extra="ignore"` 只写一处）
+    - `app/core/mysql_config.py`、`app/core/jwt_config.py`、`app/core/llm_config.py`、`app/core/storage_config.py` 全部继承 `AppSettings`
+    - 子包：`app/utils/db/`（建表脚本）、`app/utils/jwt/`（security、parse_token）、`app/utils/weg_gen/`（prompt_loader、code_extractor、file_writer）、`app/utils/utils_check/`（开发期自检脚本）
+- **关键决策**：
+  - 路径推算统一用 `Path(__file__).resolve().parents[N]`，且只在 `settings_base.py` 写一次
+  - `utils` 按**用途**分子包，不再平铺；移动文件后同步修正了 `PROMPTS_DIR` 的 `parents` 下标与全部 import
+  - 开发期脚本（`check_*`）与生产工具分开放，避免混入业务路径
+- **验证情况**：全仓扫描无残留旧导入路径；`import app.main` 通过；各 `utils_check` 脚本均可运行
+
+### 模块：大模型接入（DeepSeek V4.1-Flash）
+- **状态**：已完成
+- **功能范围**：接入 `deepseek-flash`，为生成模块提供两条模型链路
+- **已交付内容**：
+  - 核心文件：`app/core/llm_config.py`（Settings）、`app/core/llm_client.py`（两个客户端）、`app/utils/utils_check/check_llm.py`
+  - 依赖：`langchain` 1.x、`langgraph` 1.x、`langchain-deepseek`
+- **关键决策**（**实测结论**，详见 `docs/generation_module_design.md` §7）：
+  - 思考模式**默认开启**，开关是 `extra_body={"thinking": {"type": "enabled|disabled"}}`
+  - 思考模式下 `temperature` **静默失效**（不报错但无效），调参只能调 `reasoning_effort`（low/high/max）
+  - **强制 schema 与思考模式互斥**：思考模式不支持"强制指定某个函数"的 `tool_choice`，而 `with_structured_output` 正是靠它 → 结构化输出必须用**非思考模式**客户端
+  - 因此建两个客户端：`llm_client`（生成用，思考模式）+ `llm_structured_client`（结构化输出用，强制关闭思考）
+  - `reasoning` token **计入 output**；实测一次单文件生成 reasoning 占 12300/16384 → 已把 `LLM_MAX_TOKENS` 调至 32768、`DEEPSEEK_REASONING_EFFORT` 调至 `low`
+- **验证情况**：`check_llm` 三项（普通对话 / 流式 / 结构化输出）通过；截断场景已实测复现，并按预期抛出明确错误
+
+### 模块：生成模块（Web 生成：单文件 / 多文件）
+- **状态**：已完成（核心链路；流式输出与测试待补）
+- **功能范围**：一句话需求 → 生成可直接打开的网页（单 HTML 文件 / html+css+js 三文件），落盘 + 落库 + 带鉴权的预览
+- **已交付内容**：
+  - 接口：
+    - `POST /api/generation/create` —— 创建并执行生成（同步返回）
+    - `GET /api/generation/list` —— 我的生成历史（分页）
+    - `GET /api/generation/{task_uuid}` —— 任务详情
+    - `POST /api/generation/{task_uuid}/preview-ticket` —— 签发预览票据（写 HttpOnly Cookie）
+  - 核心文件：
+    - `app/models/generation_task.py`（`generation_task` 表：taskUuid / status / resultDir / fileList / token 用量 / 三时间列 / 逻辑删除）
+    - `app/schemas/generation_schemas.py`、`app/repositories/generation_repository.py`、`app/services/generation_service.py`、`app/api/generation.py`
+    - `app/agents/common.py`（`ModelUsage` / `GenerationResult` / 截断检查）
+    - `app/agents/single_html_flow.py`（单文件：一条 LCEL 链）
+    - `app/agents/multi_file_graph.py`（多文件：LangGraph 图）
+    - `app/prompts/single_html_system.md`、`app/prompts/multi_file_system.md`（提示词）
+    - `app/utils/weg_gen/prompt_loader.py`、`code_extractor.py`、`file_writer.py`
+    - `app/core/storage_config.py`（产物根目录 / 预览前缀）、`app/core/preview_static.py`（`PreviewStaticFiles`）
+  - 产物目录：`generated/{user_id}/{task_uuid}/`（根 `.gitignore` 已忽略）
+- **关键决策**：
+  - 一次生成 = **一条任务记录 + 一个磁盘目录**；对外标识一律用 `task_uuid`（uuid4.hex），不暴露自增 id
+  - 分层新增 **`agents/`（LLM 编排层）**：纯函数，只产出 `{文件名: 内容}`，**不落盘、不落库**；落盘与落库统一由 service 做（因此可脱离 MySQL/FastAPI 测试）
+  - 单文件模式 = 一条链；多文件模式 = 状态图 `plan → generate → validate →（不合格则重试，最多 2 次）`
+  - 多文件**一次调用生成三个文件**（同一次上下文里先写 html 再写 css/js，天然自洽），质量靠"整体重试"保证，而不是分文件并发生成
+  - 文件名由**我们**钉死（按代码块语言标记映射），不信任模型给出的文件名（实测模型会把 `style.css` 写成 `styles.css`）
+  - 图里的 `errors` 用**覆盖**语义而非 `Annotated[..., operator.add]`：累加会让"重试成功"仍被判定为不合格
+  - 预览鉴权用 **Cookie 票据**而非 Bearer：浏览器加载 css/js 子资源时不会带自定义请求头；票据与 `user_id + task_uuid` 绑定且 Cookie path 锁在本次预览目录
+  - 提示词放 md 且**不经过模板引擎**（CSS/JS 的花括号会被 `ChatPromptTemplate` 当变量解析而报错）
+  - token 用量分三列记录（input / output / reasoning），**失败的任务也记账**（异常携带用量）
+- **验证情况**：
+  - 离线脚本全绿：`check_extractor`（7 项）、`check_langgraph`、`check_multi_graph`（5 场景，含用量累加核对）
+  - 真实链路：单文件与多文件均生成成功，产物可在浏览器打开并正常加载 css/js
+  - 接口：`/docs` 四个接口齐全；路由顺序正确（`/list` 声明在 `/{task_uuid}` 之前）；无 token 返回 403
+  - 预览鉴权：8 种情形（无 Cookie / 乱码 / 合法 / 子资源 / 目录首页 / 越权 / 串票据 / 篡改）结果均符合预期
+  - 开发期脚本：`check_llm`、`check_langgraph`、`check_extractor`、`check_multi_graph`、`check_preview_auth`、`check_router`、`check_single_flow`
+- **待办与遗留**：
+  - **流式输出（SSE）未实现**（原计划步骤 10）
+  - 单文件模式**没有重试**（多文件有）；输出被截断时只能靠调大 `LLM_MAX_TOKENS`
+  - `pytest` 尚未补（`tests/` 仍只有用户模块的旧用例）
+  - 预览"分享链接"机制未做（票据与浏览器绑定，无法分享给别人）
+  - 生成产物目前是本地目录，未做清理策略与配额
+  - 本次给 `generation_task` 加 token 三列是**手写 ALTER TABLE**（`create_all` 不能改已存在的表）
 
 ## 2. 项目级约定（跨模块通用）
-- 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用
+- 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
 - 依赖管理：uv（依赖变更后提交 `uv.lock`）
-- 敏感信息一律走 `.env`（`.env` 不入 git）
+- 敏感信息一律走 `.env`（`.env` 不入 git）；`.env` 的定位与读取规则只在 `app/core/settings_base.py` 定义
 - 接口出入参使用 Pydantic 模型校验，字段带中文 `description`（保持 /docs 可读）
 - 数据库操作一律 ORM/参数化，禁止拼接 SQL；只连本地业务库
 - 若接入 MySQL：绝不操作 `mysql`、`sys`、`performance_schema` 等系统库
 - docstring 采用 Google 风格
+- `app/utils/` 按用途分子包（`db` / `jwt` / `weg_gen` / `utils_check`），不再平铺新文件
 
 ## 3. 下一步计划（按优先级）
-- [ ] 修复/补全 pytest 测试（根路由断言、service 断言、注册登录用例），跑通 `uv run pytest`（归属：用户模块）
-- [ ] 后端代码提交：按约定式提交 `feat(user): 实现用户注册、登录与当前用户接口`（待用户确认）
-- [ ] 前端对接用户模块：注册/登录页面 + token 管理与请求拦截（归属：frontend-react）
+- [ ] 生成模块**流式输出（SSE）**：新增流式接口 + `graph.astream(stream_mode="updates")`，前端可显示"正在规划 / 正在生成"（归属：生成模块）
+- [ ] 前端对接生成模块：生成页（需求输入 + 类型选择 + 进度 + 结果预览）（归属：frontend-react）
+- [ ] 补全 pytest：用假模型覆盖抽取器、图的重试分支、service 状态流转，跑通 `uv run pytest`（归属：生成模块 / 用户模块）
+- [ ] 后端代码提交（见下方"本次待提交内容"）（待用户确认）
 - [ ] 长期：引入 Alembic 管理表结构迁移（归属：基础设施）
+- [ ] 可选：预览分享链接、生成产物清理策略、用量统计接口
+
+### 本次待提交内容（2026-09-12）
+- 新增：生成模块全套（`agents/`、`api/generation.py`、`models/generation_task.py`、`repositories/generation_repository.py`、`schemas/generation_schemas.py`、`services/generation_service.py`、`prompts/`、`utils/weg_gen/`）
+- 新增：大模型接入（`core/llm_config.py`、`core/llm_client.py`）、配置基类（`core/settings_base.py`）、存储配置（`core/storage_config.py`）、预览鉴权（`core/preview_static.py`）
+- 新增：开发期脚本 `utils/utils_check/`（7 个）与设计文档 `docs/generation_module_design.md`
+- 重构：`app/utils/` 拆为 `db/` / `jwt/` / `weg_gen/` / `utils_check/`，同步全部 import 与路径推算；`.env` 读取收敛到 `AppSettings`
+- 修改：`app/main.py`（挂载生成路由与带鉴权的静态预览）、根 `.gitignore`（忽略 `generated/`）、`pyproject.toml` + `uv.lock`（模型相关依赖）、`frontend-react/vite.config.ts`（新增 `/preview` 代理）
 
 ## 4. 相关文档
-- 问答记录：docs/QA.md（已积累 Q1–Q18）
+- 问答记录：`docs/QA.md`（已积累 Q1–Q18）
+- 生成模块设计约定：`docs/generation_module_design.md`（分层、agents 约定、task_uuid、接口命名、DeepSeek 接入约束、边界与已知取舍）

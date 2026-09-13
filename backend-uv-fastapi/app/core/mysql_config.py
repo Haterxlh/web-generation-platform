@@ -1,14 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pathlib import Path
+# app/core/mysql_config.py
+from app.core.settings_base import AppSettings
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-ENV_FILE = BASE_DIR / ".env"
-
-class MysqlSettings(BaseSettings):
-    # extra="ignore" 表示：忽略 .env 里没有的字段，只保留 model_config 里的字段，
-    # 如果 .env 里有字段，但是 model_config 里没有的字段，会报错。
-    model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore")
-
+class MysqlSettings(AppSettings):
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_user: str = "root"

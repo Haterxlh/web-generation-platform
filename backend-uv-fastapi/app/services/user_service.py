@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.user_schemas import LoginRequest, LoginResponse, RegisterRequest
-from app.utils.security import create_access_token, hash_password, verify_password
+from app.utils.jwt.security import create_access_token, hash_password, verify_password
 
 
 class UserService:
