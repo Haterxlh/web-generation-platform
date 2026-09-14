@@ -1,7 +1,7 @@
 # 项目进度 —— backend-uv-fastapi
 
 > 本文件用于跨会话同步开发进度。每次总结进度时按此格式更新。
-> 最近更新时间：2026-09-12
+> 最近更新时间：2026-09-14
 
 ## 1. 模块进度
 
@@ -80,6 +80,7 @@
   - **强制 schema 与思考模式互斥**：思考模式不支持"强制指定某个函数"的 `tool_choice`，而 `with_structured_output` 正是靠它 → 结构化输出必须用**非思考模式**客户端
   - 因此建两个客户端：`llm_client`（生成用，思考模式）+ `llm_structured_client`（结构化输出用，强制关闭思考）
   - `reasoning` token **计入 output**；实测一次单文件生成 reasoning 占 12300/16384 → 已把 `LLM_MAX_TOKENS` 调至 32768、`DEEPSEEK_REASONING_EFFORT` 调至 `low`
+    （2026-09-14 更新：`.env` 实际为 `LLM_MAX_TOKENS=345600`；且 `reasoning_effort=low` 实测疑似被静默忽略 —— 详见生成模块的「待办与遗留」）
 - **验证情况**：`check_llm` 三项（普通对话 / 流式 / 结构化输出）通过；截断场景已实测复现，并按预期抛出明确错误
 
 ### 模块：生成模块（Web 生成：单文件 / 多文件）
@@ -111,19 +112,39 @@
   - 预览鉴权用 **Cookie 票据**而非 Bearer：浏览器加载 css/js 子资源时不会带自定义请求头；票据与 `user_id + task_uuid` 绑定且 Cookie path 锁在本次预览目录
   - 提示词放 md 且**不经过模板引擎**（CSS/JS 的花括号会被 `ChatPromptTemplate` 当变量解析而报错）
   - token 用量分三列记录（input / output / reasoning），**失败的任务也记账**（异常携带用量）
+- **本轮修复（2026-09-14）**：
+  1. `GenerationService.create` 成功路径缺少 `GenerationTaskRepository.update(db, task)` 与
+     `return GenerationService._to_response(task)`：接口报 500（`ResponseValidationError: input: None`），
+     且任务状态永远停在 `running`、`result_dir` / `file_list` / token 用量均未落库。
+     已补 `duration_ms` 赋值与「提交 + 返回」两步。
+  2. **多文件模式改用非思考客户端（`llm_no_thinking_client`）**：
+     思考模式下模型把 94% 的输出预算花在"思考里反复起草代码"（`reasoning_content` 57229 字符 / 96 个代码碎片），
+     最终答案只剩约 1400 token，于是每次交出随机残缺子集（三次分别缺 js / 缺 css+js / 缺 css+js）；
+     三轮提示词加固均无效 —— **提示词管不到思考阶段的预算分配**。
+     对照实验（同需求、同提示词，只切换思考开关）：`output_tokens` 30619 → **3331**，一次调用即输出三个完整代码块。
+     **单文件模式保留思考模式**（依据：单文件已成功 2 次、多文件 0/3）。
+  3. 失败时把模型原文落盘到 `generated/{user_id}/{task_uuid}/_debug_raw.txt`（`write_debug_raw`），
+     消除"失败只能再烧一次 token 复现"的可观测性缺口。
+  4. 重试反馈区分读者：不再把"（请检查提示词的输出格式约定）"这类**面向开发者**的诊断喂回模型，
+     改为面向模型的指令（`CodeExtractError` 新增 `missing` / `found` 属性，`_extract_and_check` 据此生成指令）。
 - **验证情况**：
-  - 离线脚本全绿：`check_extractor`（7 项）、`check_langgraph`、`check_multi_graph`（5 场景，含用量累加核对）
-  - 真实链路：单文件与多文件均生成成功，产物可在浏览器打开并正常加载 css/js
-  - 接口：`/docs` 四个接口齐全；路由顺序正确（`/list` 声明在 `/{task_uuid}` 之前）；无 token 返回 403
+  - `agents/` 离线脚本：`check_extractor`（7 项）、`check_langgraph`、`check_multi_graph`（5 场景，含用量累加核对）全绿
+  - **HTTP 接口端到端**：2026-09-14 修复上方 bug#1 后**首次**跑通（create → list → preview-ticket → 带 Cookie 打开产物，含 multi 子资源加载）
+  - 多文件模式：修复 bug#2 后跑通，三个产物文件齐全、预览正常
   - 预览鉴权：8 种情形（无 Cookie / 乱码 / 合法 / 子资源 / 目录首页 / 越权 / 串票据 / 篡改）结果均符合预期
-  - 开发期脚本：`check_llm`、`check_langgraph`、`check_extractor`、`check_multi_graph`、`check_preview_auth`、`check_router`、`check_single_flow`
+  - `pytest`：`test_smoke`(2) + `test_user_service`(2) + `test_generation_schemas`(2) = 6 个离线用例全绿
+  - 开发期脚本：`check_llm`、`check_langgraph`、`check_extractor`、`check_multi_graph`、`check_preview_auth`、`check_router`、`check_single_flow`、`check_multi_response`
 - **待办与遗留**：
-  - **流式输出（SSE）未实现**（原计划步骤 10）
+  - **流式输出（SSE）未实现**（原计划步骤 10）；复杂需求实测耗时可达 **157 秒**，前端目前只有"请稍候"文案
   - 单文件模式**没有重试**（多文件有）；输出被截断时只能靠调大 `LLM_MAX_TOKENS`
-  - `pytest` 尚未补（`tests/` 仍只有用户模块的旧用例）
+  - `pytest` 已补 6 个**离线**用例（`test_smoke` / `test_user_service` / `test_generation_schemas`）；接口级与图的重试 / 截断分支仍未覆盖
   - 预览"分享链接"机制未做（票据与浏览器绑定，无法分享给别人）
   - 生成产物目前是本地目录，未做清理策略与配额
   - 本次给 `generation_task` 加 token 三列是**手写 ALTER TABLE**（`create_all` 不能改已存在的表）
+  - **`DEEPSEEK_REASONING_EFFORT` 疑似被静默忽略**：`low` 档实测仍产出 28984 个思考 token（与设计约定 §7.2 的 temperature 静默失效同款），待专门验证
+  - **`LLM_MAX_TOKENS` 实际为 `.env` 中的 345600**（本文档此前记为 32768，已过期；`.env` 不入库，换机器要重新确认）
+  - 数据库遗留：1 条历史僵尸 `running` 记录；2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
+  - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
 ## 2. 项目级约定（跨模块通用）
 - 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
@@ -136,20 +157,17 @@
 - `app/utils/` 按用途分子包（`db` / `jwt` / `weg_gen` / `utils_check`），不再平铺新文件
 
 ## 3. 下一步计划（按优先级）
-- [ ] 生成模块**流式输出（SSE）**：新增流式接口 + `graph.astream(stream_mode="updates")`，前端可显示"正在规划 / 正在生成"（归属：生成模块）
-- [ ] 前端对接生成模块：生成页（需求输入 + 类型选择 + 进度 + 结果预览）（归属：frontend-react）
-- [ ] 补全 pytest：用假模型覆盖抽取器、图的重试分支、service 状态流转，跑通 `uv run pytest`（归属：生成模块 / 用户模块）
-- [ ] 后端代码提交（见下方"本次待提交内容"）（待用户确认）
+- [ ] 生成进度体验：后端**流式输出（SSE）**接口 + `graph.astream(stream_mode="updates")`；前端先加"已等待 N 秒"计时器（归属：生成模块 / frontend-react）
+- [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
+- [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
+- [ ] 可选：多文件"定向补缺"重试；失败原文落盘时附带元信息头（finish_reason / usage / errors）（归属：生成模块）
 - [ ] 长期：引入 Alembic 管理表结构迁移（归属：基础设施）
 - [ ] 可选：预览分享链接、生成产物清理策略、用量统计接口
 
-### 本次待提交内容（2026-09-12）
-- 新增：生成模块全套（`agents/`、`api/generation.py`、`models/generation_task.py`、`repositories/generation_repository.py`、`schemas/generation_schemas.py`、`services/generation_service.py`、`prompts/`、`utils/weg_gen/`）
-- 新增：大模型接入（`core/llm_config.py`、`core/llm_client.py`）、配置基类（`core/settings_base.py`）、存储配置（`core/storage_config.py`）、预览鉴权（`core/preview_static.py`）
-- 新增：开发期脚本 `utils/utils_check/`（7 个）与设计文档 `docs/generation_module_design.md`
-- 重构：`app/utils/` 拆为 `db/` / `jwt/` / `weg_gen/` / `utils_check/`，同步全部 import 与路径推算；`.env` 读取收敛到 `AppSettings`
-- 修改：`app/main.py`（挂载生成路由与带鉴权的静态预览）、根 `.gitignore`（忽略 `generated/`）、`pyproject.toml` + `uv.lock`（模型相关依赖）、`frontend-react/vite.config.ts`（新增 `/preview` 代理）
+### 变更记录
+- **2026-09-12（commit `2158079`）**：生成模块全套（`agents/`、`api/generation.py`、`models/generation_task.py`、`schemas/`、`services/`、`repositories/`、`prompts/`、`utils/weg_gen/`）+ 大模型接入（`core/llm_client.py`）+ 配置基类（`core/settings_base.py`）+ 存储配置 + 预览鉴权；`app/utils/` 拆为用途子包；`frontend-react/vite.config.ts` 新增 `/preview` 代理
+- **2026-09-14**：前端对接生成模块（见 `frontend-react/docs/proj_progress.md`）；修复 `create` 缺少落库与返回导致的 500；**多文件改用非思考客户端**并强化输出契约；失败任务落盘模型原文；补充 6 个离线 pytest 用例
 
 ## 4. 相关文档
-- 问答记录：`docs/QA.md`（已积累 Q1–Q18）
+- 问答记录：`docs/QA.md`（已积累 Q1–Q24）
 - 生成模块设计约定：`docs/generation_module_design.md`（分层、agents 约定、task_uuid、接口命名、DeepSeek 接入约束、边界与已知取舍）

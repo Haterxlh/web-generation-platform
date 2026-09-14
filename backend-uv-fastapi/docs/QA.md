@@ -303,3 +303,124 @@ Schema 中字段类型是 `datetime` 且**必填**（即使写了 `Optional` 但
 简单来说，它是一种程序设计技术，用于在面向对象的编程语言（如 Java、Python、C#）和
 关系型数据库（如 MySQL、PostgreSQL）之间建立"桥梁"：把数据库表映射成类、行映射成对象，
 让开发者用操作对象的方式操作数据库，而不用手写 SQL。
+
+---
+
+### Q19: 接口返回 500，错误是 `ResponseValidationError ... input: None`，怎么读？
+**tag:** `FastAPI` | `response_model` | `排错`
+
+**A19:**
+
+`response_model=GenerationTaskResponse` 等于给接口签了一份合同：FastAPI 会在返回前**用这个模型校验一遍**返回对象，校验不过就抛 `ResponseValidationError` → 500。
+
+`input: None` 是最关键的线索：它说明**视图函数返回了 `None`**（既不是"模型调用失败"，也不是"数据库报错"）。本例根因是 `GenerationService.create()` 的 `try` **成功分支**只改了内存里的 ORM 对象属性，既没调 `update(db, task)` 提交、也没 `return` —— 方法自然返回 `None`。
+
+排查口诀：**先看异常类型（校验类 vs 业务类）→ 再看 `input` 的值**。
+
+- `input: None` → 某条 return 路径没返回东西；
+- `input: {...}` 但报缺字段 / 类型错 → 字段名或类型与 `response_model` 不一致。
+
+教训：**只要声明了 `response_model`，每一条 return 路径都要问一句"这个分支怎么返回"**；`try / except` 尤其容易漏掉成功分支（失败分支有 `raise`，成功分支却忘了 `return`）。
+
+---
+
+### Q20: 我改了 ORM 对象的属性，为什么数据库里没变？
+**tag:** `SQLAlchemy` | `commit` | `事务边界`
+
+**A20:**
+
+SQLAlchemy 的 Session 是"工作单元"：改属性只是把对象标记成**脏数据（dirty）**，要等 `commit()` 才会写库。
+
+本项目的约定是**事务边界收在 repository 里**（`db.add` + `db.commit` + `db.refresh`），service 不直接 commit —— 所以 service 改完属性必须调用 `GenerationTaskRepository.update(db, task)`。
+
+典型症状：接口 500，但数据库里那条记录状态停在 `running`、其它列全是 NULL —— 就是"改了没提交"。
+
+`db.refresh(task)` 的作用：commit 之后重新从库里读一遍，拿到数据库生成的主键与 `server_default` 时间列（否则内存里的对象还是旧值）。
+
+---
+
+### Q21: 怎么用 SQL 判断"乱码"到底发生在哪一侧？
+**tag:** `MySQL` | `字符集` | `排错`
+
+**A21:**
+
+先分两类，它们的**可逆性完全不同**：
+
+- `ä½ å¥½` 这类 → **编码解读错误**（UTF-8 字节被按 latin1 解读），**可逆**，问题在"读的一方"；
+- `?????` 这类 → **有损替换**（目标字符集里没有该字符，被替换成 `?` 即 0x3F），**不可逆**，问题在"写之前"。
+
+判定三件套（把 `prompt` 换成你的列）：
+
+```sql
+SELECT id, CHAR_LENGTH(prompt) AS char_len, LENGTH(prompt) AS byte_len,
+       HEX(LEFT(prompt, 4)) AS head_hex, prompt
+FROM generation_task ORDER BY id;
+```
+
+- `head_hex = 3F3F3F3F` 且 `char_len == byte_len` → **入库前就已经是问号**：数据库无辜，去查发送端（终端码页 / PowerShell 的 `curl` 别名 / 脚本编码）；
+- `head_hex = E5819A...` 且 `byte_len ≈ 3 × char_len` → 中文完好。
+
+再排除表 / 列字符集：
+
+```sql
+SELECT TABLE_NAME, TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'wgp_db';
+```
+
+本项目实例：2026-09-13 两条 prompt 的 `head_hex` 是 `3F3F3F3F`、`char_len == byte_len == 20`，而**同一时刻**另一条记录中文完好 → 确认是命令行发送端的锅，代码与数据库无责。
+
+---
+
+### Q22: 多文件生成反复"缺少代码块"，为什么往提示词里加约束没用？
+**tag:** `LLM` | `思考模式` | `reasoning_content` | `排错`
+
+**A22:**
+
+症状：模型每次只交出一个**残缺子集**（`['index.html']` → `['index.html', 'style.css']`），三轮提示词加固（把格式要求提到最前、加硬性禁止项、加交付清单、重试喂面向模型的指令）**全部无效**。
+
+破局的一步是**去看响应对象，而不是继续猜提示词**：
+
+- `additional_kwargs["reasoning_content"]` = 57229 字符、**192 个围栏、约 96 个代码碎片** —— 模型在"思考"里反复起草 html / css / js；
+- `usage_metadata`：`output_tokens = 30619`，其中 `reasoning = 28984`（**94.6%**），可见答案只剩 4883 字符（≈1400 token）；
+- `finish_reason = 'stop'` → **不是截断**，是模型"自愿"结束。
+
+结论：**思考模式与"一次输出三个完整文件"的契约不兼容** —— 预算与注意力在思考阶段耗尽，最终答案只是随机残缺子集。
+
+修法：多文件生成改用**非思考客户端**。对照实验（同需求、同提示词，只切换思考开关）：`output_tokens` 30619 → **3331**，一次调用输出 `['html', 'css', 'js']` 三块齐全。
+
+三条通用教训：
+
+1. **"指令类"修复解决不了"资源分配类"问题** —— 提示词管不到思考阶段怎么花预算；
+2. 遇到"模型不听话"，先看 `finish_reason` / `usage_metadata` / `additional_kwargs`，再决定改哪一层；
+3. `reasoning_content` 是**第一现场证据**，只读 `.text` 会永远看不到真相。
+
+---
+
+### Q23: `temperature` / `reasoning_effort` 为什么"设置了却没效果"？
+**tag:** `LLM` | `参数` | `静默失效`
+
+**A23:**
+
+- 思考模式下 `temperature` **静默失效**（不报错、不生效），调参只能用 `reasoning_effort`（low / high / max，见设计约定 §7.2）；
+- 但实测 `reasoning_effort=low` 仍产出 28984 个思考 token —— **疑似同样被静默忽略**（网关 / 模型不支持该参数时，往往既不报错也不生效）。
+
+验证方法：同一个需求分别设 `low` 与 `max` 各跑一次，比对 `reasoning_tokens`；若两次结果几乎相同，即证明该参数无效。
+
+教训：**"参数被接受" ≠ "参数生效"**。凡是影响成本或质量的参数，都要用实测数字验证一次。本项目已积累两例：`temperature`、`reasoning_effort`。
+
+---
+
+### Q24: `load_prompt` 加了 `lru_cache`，为什么改提示词后"没生效"？
+**tag:** `配置` | `缓存` | `热重载` | `排错`
+
+**A24:**
+
+三处机制叠加造成的"改了没反应"：
+
+1. `load_prompt` 有 `@lru_cache(maxsize=None)`（`app/utils/weg_gen/prompt_loader.py:11`）—— 提示词**读一次缓存一辈子**；
+2. `_GRAPH = build_multi_file_graph()` 在**模块导入时**执行，`system_prompt` 在那时就被读进闭包（`multi_file_graph.py`）；
+3. `uvicorn --reload`（`fastapi dev`）**默认只监视 `*.py`** —— 改 `.md` **不会**触发重载。
+
+结论：**只改提示词文件时，后端完全感知不到**，必须手动重启进程（或顺手改一个 `.py` 触发重载）。
+
+更普遍的教训：**"静态资源 + 缓存"的组合一定要问一句"改了它，谁会去重新读"**。缓存提升性能的同时，也把"配置更新"变成了需要显式处理的问题。
+

@@ -29,6 +29,8 @@ useEffect(要执行的函数, [依赖数组])
 对比 `useMemo`：**`useEffect` 是"做事"（返回清理函数），`useMemo` 是"算值"（返回算出来的值）**，两者都有依赖数组，但用途完全不同。
 
 > 开发模式下 `StrictMode` 会故意"挂载 → 卸载 → 再挂载"，effect 因此执行两次（Network 里 `GET /current` 出现两次是正常的），生产环境只执行一次。
+>
+> 补充（2026-09-14）：即使用 `useCallback` 稳定了依赖，`GET /api/generation/list` 在开发环境仍会出现两次请求，原因同上。**不要为了消掉它去关 StrictMode** —— GET 是幂等的，而 StrictMode 正是靠这种"双调用"帮你发现副作用没清理干净的问题。
 
 ---
 
@@ -233,6 +235,14 @@ catch { $_.ErrorDetails.Message }     # 非 2xx 会抛异常，用 catch 看响�
 
 补充两点：PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名，要写 **`curl.exe`**；另外这个 422 报错本身**证明请求已到达后端**（404 才说明路径不对）。
 
+> **补充（2026-09-14）**：同一环境下还有一个更隐蔽的坑 —— **中文会静默变成问号**。
+> 判定方法：
+> ```sql
+> SELECT CHAR_LENGTH(col) AS char_len, LENGTH(col) AS byte_len, HEX(LEFT(col, 4)) AS head_hex FROM t;
+> ```
+> 若 `head_hex = 3F3F3F3F` 且 `char_len == byte_len` → 说明**请求发出前**中文就已被替换成 `?`（有损、不可逆），后端与数据库无责。
+> 规避：把 JSON 先写成 UTF-8 文件，再用 `curl.exe --data-binary "@body.json"`；注意 PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名，不是真正的 curl。
+
 ---
 
 ### Q10: `FormEvent` 被标记 deprecated（ts 6385），需要修吗？
@@ -379,6 +389,73 @@ Invalid hook call. Hooks can only be called inside of the body of a function com
 - 本项目 CSS（`.auth-*`）已经共用，所以登录页**零样式成本**，重复的只是十几行 JSX；
 - 抽早了会痛：一旦登录页要加"记住我"、注册页要加"图形验证码"，公共组件会被塞满 `if` 分支，比重复更难维护；
 - **抽象时机**：出现**第三处**同类页面（如"忘记密码"），或你发现"改一处必须同步改另一处"时，再抽 `components/common/AuthCard.tsx`（三次法则 Rule of Three）。
+
+---
+
+### Q16: `await` 之后调用 `window.open` 为什么被浏览器拦掉？为什么不能加 `noopener`？
+**tag:** `浏览器` | `window.open` | `弹窗拦截`
+
+**A16:**
+
+浏览器只允许在"用户手势（transient activation）"期间弹窗。`await fetch(...)` 之后已经脱离那次点击，Safari / Firefox 会直接拦，Chrome 也不稳定。
+
+正确做法：在**同步代码**里先占位拿到句柄，等数据回来再改地址：
+
+```ts
+const previewWindow = window.open('', '_blank')      // 同步占位，一定不被拦
+const ticket = await issuePreviewTicket(taskUuid)
+previewWindow.location.href = ticket.preview_url
+```
+
+**但不能加 `noopener`**：按规范，一旦指定 `noopener`，`window.open()` 必然返回 `null`，句柄就没了。想要同样的安全性，就在拿到句柄后手动 `previewWindow.opener = null`。
+
+失败路径也要收拾：`catch` 里 `previewWindow?.close()`，否则用户会留下一个永远空白的标签页。
+
+---
+
+### Q17: 为什么 `localhost:5173` 和 `127.0.0.1:8000` 的 token / Cookie 不共享？
+**tag:** `同源策略` | `Cookie` | `localStorage`
+
+**A17:**
+
+**源 = 协议 + 域名 + 端口**，三者任一不同就是不同的源；`localStorage` 与 Cookie 都按源隔离。
+
+所以 `localhost:8000`、`127.0.0.1:8000`、`localhost:5173` 是**三个互不相通的源**（哪怕指向同一台机器）。
+
+实例：在前端（`localhost:5173`）登录拿到 token，再到 `/docs`（`127.0.0.1:8000`）的 Console 执行 `localStorage.getItem('wgp_access_token')` 得到 `null` → 请求头变成 `Bearer null` → **401**。
+
+预览票据同理：**在哪里签的票，就只能在那个源打开预览**。开发期请固定一套源（本项目统一 `localhost:5173`，`/api` 与 `/preview` 都走 Vite 代理）。
+
+---
+
+### Q18: 为什么 `document.cookie` 看不到预览票据？
+**tag:** `HttpOnly` | `Cookie` | `安全`
+
+**A18:**
+
+票据是用 `httponly=True` 下发的（`response.set_cookie(..., httponly=True)`），**JS 读不到正是它的设计目的**：XSS 偷不走。
+
+所以 `document.cookie` 为空**不代表 Cookie 不存在**。观察它有两条路：
+
+1. DevTools → Application → Storage → Cookies：**必须先选中与当前页面同源的那一项**，再看 `Path` / `HttpOnly` / `Expires` 三列；
+2. 更权威：Network → 刷新 → 点文档请求 → Request Headers 里的 `Cookie: wgp_preview=...`。
+
+相关坑：票据的 `Path` 锁死在 `/preview/{user_id}/{task_uuid}/`，路径不匹配时浏览器**根本不会发送**该 Cookie（表现为 403，而不是"Cookie 不存在"）。
+
+---
+
+### Q19: `useCallback` 不写为什么会造成无限请求？
+**tag:** `React` | `Hooks` | `useCallback`
+
+**A19:**
+
+`useEffect(fn, [load])` 的依赖比较的是**引用**。组件每次渲染都会重新创建 `load` 函数 → 引用变化 → effect 重跑 → 发请求 → `setItems` → 重新渲染 → 新 `load` → **死循环**。
+
+`useCallback(fn, [])` 把函数引用固定下来，effect 就只在首次（开发环境 StrictMode 下是两次）执行。
+
+这也正是 `react-hooks/exhaustive-deps` 这条 lint 规则的价值：它逼你把 effect 用到的外部值都写进依赖数组，从而暴露"函数引用不稳定"的问题。
+
+判断标准：**effect 依赖里出现"组件内定义的函数"时，先问它是否稳定。**
 
 ---
 

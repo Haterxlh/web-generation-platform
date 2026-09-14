@@ -1,7 +1,7 @@
 # 项目进度 —— frontend-react
 
 > 本文件用于跨会话同步开发进度。每次总结进度时按此格式更新。
-> 最近更新时间：2026-09-12
+> 最近更新时间：2026-09-14
 
 ## 1. 模块进度
 
@@ -47,7 +47,7 @@
   - 登录/注册为独立页面（`AppLayout` 的兄弟路由），因此没有顶部导航
   - 前端校验与后端 `Field` 约束一致（账号 2~32、密码 6~64）；**登录页只校验非空**，不按注册规则拦老账号
   - 注册即登录：`register` 成功后自动再调 `login`（注册流程共 2 个请求）
-  - 守卫采用组件包装式：`<RequireAuth><ProjectsPage /></RequireAuth>`；`/` 与 `/generate` 保持公开
+  - 守卫采用组件包装式：`<RequireAuth><ProjectsPage /></RequireAuth>`；`/` 保持公开；`/generate` 与 `/projects` 需要登录（2026-09-14 调整：生成模块接口全部要求 Bearer token）
   - 两个守卫共用 `intendedPath(location.state)`，解决"GuestOnly 写死跳首页"与登录页跳转目标冲突的问题
   - 提交期间 `submitting=true` 禁用按钮，防重复提交；跳转用 `replace: true`，避免后退回到登录/注册页
   - 表单为受控组件（`value` + `onChange`）；提交事件类型用 `SubmitEvent<HTMLFormElement>`（`FormEvent` 在 @types/react 已标记 deprecated）
@@ -60,9 +60,42 @@
   - 登出：清除本地 token、头部切回"登录/注册"；在 `/projects` 登出被自动送回登录页
   - `npm run typecheck` / `npm run lint` / `npm run build` 通过
 - **待办与遗留**：
-  - 生成 / 项目模块尚无对应后端接口，页面仍为占位
+  - 生成 / 项目模块**已对接**，见下方「生成模块（前端对接）」条目
   - 无自动化测试（可考虑 Vitest + Testing Library）
   - 可选增强：字段级错误提示、"记住我"、"忘记密码"、注册页也回跳原目标页
+
+### 模块：生成模块（前端对接）
+- **状态**：已完成
+- **功能范围**：对接后端 `/api/generation/*`，提供「填需求 → 生成 → 预览」与「历史记录 → 重新预览」
+- **已交付内容**：
+  - 页面：
+    - `src/pages/Generate/GeneratePage.tsx`（需求表单 + 生成状态机 + 结果卡片 + 打开预览）
+    - `src/pages/Projects/ProjectsPage.tsx`（历史列表 + 分页 + 重新预览）
+  - 接口层：`src/api/generation_api.ts`（create / list / detail / preview-ticket）
+  - 类型层：`src/types/generation_types.ts`（`GenType` / `GenStatus` 字面量联合 + 4 个接口）
+  - 共享逻辑：`src/hooks/useOpenPreview.ts`（签票 + 同步占位窗口 + 错误提示）
+  - 路由：`src/App.tsx` 把 `/generate` 纳入 `RequireAuth`
+  - 样式：`src/styles/global.css` 新增 `.gen-*` / `.proj-*`
+- **关键决策**：
+  - 字段一律 snake_case，与后端 schema 逐字段对齐；`GenType` / `GenStatus` 用字面量联合（写错值在 `tsc` 阶段就报错）
+  - **打开预览必须"同步占位窗口"**：`await` 之后再 `window.open` 会被弹窗拦截器拦下；且不能用 `noopener`（它会让 `window.open` 返回 `null`，拿不到句柄）
+  - **预览只能 `window.open(preview_url)`**：产物 css/js 子资源由浏览器自动携带 `wgp_preview` Cookie；前端不碰 token，也不能用 fetch 读产物
+  - 列表只存 `task_uuid`，不缓存 `preview_url`（票据 30 分钟过期，每次点击重新签票）
+  - 只有 `status === 'success'` 才允许点预览（`running` / `failed` 无产物，点下去必然被后端 400 拒绝）
+  - `Record<GenStatus, string>` 保证后端新增状态时编译期报错
+  - `useCallback` 稳定 `load` 引用，避免 `useEffect` 依赖变化导致无限请求
+  - `/generate` 纳入 `RequireAuth`（生成模块接口全部要求 token；未登录点进来只会拿到 403）
+- **验证情况**：
+  - `npm run typecheck` / `npm run lint` / `npm run build` 全绿
+  - 未登录访问 `/generate` → 跳登录页，登录后自动回到 `/generate`（`intendedPath` 生效）
+  - 生成中按钮禁用、Network 仅 1 条 create；Offline 时提示中文文案且按钮恢复；成功后展示结果卡片
+  - 预览：新标签页打开产物；`localhost:5173` 下 `wgp_preview` 的 Path 为 `/preview/{user_id}/{task_uuid}/`；手动删 Cookie 后刷新 403、重新点击即恢复
+  - 历史列表：状态标签、失败原因展示、僵尸 `running` 行按钮置灰、分页（临时把 `PAGE_SIZE` 改为 2 验证，验完改回 10）
+- **待办与遗留**：
+  - 生成中只有"请稍候"文案，**无实时进度**（依赖后端 SSE）；复杂需求实测可达 157 秒，建议先加"已等待 N 秒"计时器
+  - 无自动化测试（可选 Vitest + Testing Library）
+  - 历史列表暂无删除 / 重新生成（后端无对应接口）
+  - `immer` / `use-immer` 已引入但**暂未使用**（预留给"改数组中的某一项"这类场景）
 
 ## 2. 项目级约定（跨模块通用）
 - 分层调用：`pages → api → http.ts`；类型放 `types/*_types.ts`；全局状态与 hook 放 `hooks/`
@@ -74,11 +107,11 @@
 - 生产环境 `/api` 由 Nginx/网关转发；`server.proxy` 仅开发服务器生效（`npm run preview` 不代理）
 
 ## 3. 下一步计划（按优先级）
-- [ ] 后端"生成 / 项目"模块接口就绪后，按同一套模式对接前端（types → api → 页面 → 守卫）
-- [ ] 首页与生成页的真实内容
-- [ ] 可选：`AbortController` 取消请求；Vitest 单元测试；表单字段级校验
-- [ ] 可选：清理 `src/hooks/useDebounce.ts`、`src/utils/format.ts` 等尚未使用的脚手架示例（确认不用再删）
+- [ ] 生成进度体验：先加"已等待 N 秒"计时器；等后端 SSE 就绪后接流式进度（"正在规划 / 正在生成"）
+- [ ] 首页真实内容（当前为占位 / 简介）
+- [ ] 可选：Vitest 单元测试；`AbortController` 取消在途请求；表单字段级校验
+- [ ] 可选：清理 `src/hooks/useDebounce.ts`、`src/utils/format.ts` 等尚未使用的脚手架示例
 
 ## 4. 相关文档
-- 问答记录：`docs/QA.md`（已积累 Q1–Q15，覆盖本轮前后端对接）
+- 问答记录：`docs/QA.md`（已积累 Q1–Q19，覆盖用户模块与生成模块对接）
 - 后端进度：`../backend-uv-fastapi/docs/proj_progress.md`
