@@ -10,8 +10,9 @@
 三个节点各司其职：
 
 - ``plan``     ：用**非思考模式 + 结构化输出**定下站点标题 / 风格 / html 区块（设计约定 §7.3、§7.4）
-- ``generate`` ：用**思考模式**一次生成三个文件（同一次上下文里先写 html 再写 css/js，天然自洽）；
-                 重试时把上一轮的校验失败原因带进 prompt
+- ``generate`` ：用**非思考模式**一次生成三个文件（同一次上下文里先写 html 再写 css/js，天然自洽）。
+                为什么关思考：2026-09-14 实测，思考模式会把 94% 的输出预算花在"思考里反复起草代码"，
+                最终答案只剩残缺子集（三次分别缺 js / 缺 css+js / 缺 css+js）；关掉后 3331 token 一次齐全。
 - ``validate`` ：**纯 Python 校验**（抽取文件、检查引用关系与 viewport），不调模型
 
 职责边界（设计约定 §3.2）：本模块是纯函数 —— 给它需求、还它 {文件名: 内容}；不落盘、不落库、不碰 HTTP。
@@ -32,7 +33,7 @@ from app.agents.common import (
     ModelUsage,
     ensure_not_truncated,
 )
-from app.core.llm_client import llm_client, llm_structured_client
+from app.core.llm_client import llm_client, llm_structured_client, llm_no_thinking_client
 from app.utils.weg_gen.code_extractor import CodeExtractError, extract_multi_files
 from app.utils.weg_gen.prompt_loader import load_prompt
 
@@ -95,7 +96,7 @@ _PLANNER = llm_structured_client.with_structured_output(SitePlan, include_raw=Tr
 
 
 def _build_user_message(state: MultiFileState) -> str:
-    """拼出这次生成要用的用户消息：需求 + 规划 + （重试时）上一轮的失败原因。
+    """拼出这次生成要用的用户消息：需求 + 规划 + 交付清单 +（重试时）面向模型的修正指令。
 
     Args:
         state: 当前图状态。
@@ -112,10 +113,20 @@ def _build_user_message(state: MultiFileState) -> str:
     if state.get("html_outline"):
         parts.append(f"index.html 需要包含的区块：\n{state['html_outline']}")
 
-    # 这一步是"重试"真正有用的地方：把上一轮哪里不合格明确告诉模型
+    # 交付清单放在最后：离输出最近的指令权重最高，用来抵消"只写 index.html"的惯性。
+    # 上面那段规划只谈了 index.html，模型很容易把交付物理解成"就一个 html"（2026-09-14 实测）。
+    parts.append(
+        "交付清单（缺一不可，按此顺序输出）：\n"
+        "1. ```html 代码块 —— index.html 的完整内容\n"
+        "2. ```css 代码块 —— style.css 的完整内容\n"
+        "3. ```js 代码块 —— script.js 的完整内容\n"
+        "只输出 index.html 是不合格的回答。"
+    )
+
+    # 重试反馈：这里只放"面向模型的指令"，不放开发者诊断
     if state.get("errors"):
         details = "\n".join(f"- {error}" for error in state["errors"])
-        parts.append(f"上一次生成不合格，这次必须修正以下问题：\n{details}")
+        parts.append(f"上一次回答不合格，这次必须修正：\n{details}")
 
     return "\n\n".join(parts)
 
@@ -132,8 +143,15 @@ def _extract_and_check(raw_output: str) -> tuple[dict[str, str], list[str]]:
     try:
         contents = extract_multi_files(raw_output)
     except CodeExtractError as error:
-        # 可预期的失败 → 变成状态，让图有机会重试；异常只留给真正意外的情况
-        return {}, [str(error)]
+        # 这里返回的是"给模型看的指令"：只说缺什么、下一步要怎么做。
+        # 绝不把 "实际识别到…（请检查提示词的输出格式约定）" 这类开发者诊断喂回模型 ——
+        # 实测（2026-09-14）连续两次喂诊断信息，模型依然只输出 index.html：它不会把元信息当指令。
+        found = "、".join(error.found) if error.found else "空内容"
+        missing = "、".join(error.missing) if error.missing else "必需的代码块"
+        return {}, [
+            f"上一次回答只给出了 {found}，缺少 {missing}。"
+            "这次必须把 index.html、style.css、script.js 三个代码块全部完整输出。"
+        ]
 
     errors: list[str] = []
     html = contents["index.html"]
@@ -164,7 +182,7 @@ def build_multi_file_graph(
     Returns:
         已编译的图（可直接 invoke / stream）。
     """
-    llm = model or llm_client
+    llm = model or llm_no_thinking_client   # 原为 llm_client（思考模式）——实测会毁掉三文件契约
     planner_chain = planner or _PLANNER
     system_prompt = load_prompt("multi_file_system")
 
@@ -286,6 +304,8 @@ def generate_multi_file(
     missing = [name for name in REQUIRED_FILES if name not in contents]
     if missing:
         raise GenerationFailedError(
-            f"多文件生成失败（已尝试 {state.get('attempts')} 次）：{state.get('errors')}", usage
+            f"多文件生成失败（已尝试 {state.get('attempts')} 次）：{state.get('errors')}",
+            usage,
+            raw_output=state.get("raw_output"),
         )
     return GenerationResult(files=contents, usage=usage)

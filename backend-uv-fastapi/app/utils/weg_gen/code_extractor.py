@@ -24,7 +24,22 @@ _FILENAME_RE = re.compile(r"([A-Za-z0-9_-]+\.(?:html|htm|css|js))\b", re.IGNOREC
 
 
 class CodeExtractError(ValueError):
-    """模型输出里缺少必需的代码块，或代码块格式不符。"""
+    """模型输出里缺少必需的代码块，或代码块格式不符。
+
+    Attributes:
+        missing: 缺失的期望文件名（供上层生成"面向模型"的修正指令）。
+        found: 实际识别到的文件名（供诊断）。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        missing: list[str] | None = None,
+        found: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.missing = missing or []
+        self.found = found or []
 
 
 @dataclass
@@ -153,7 +168,9 @@ def _collect(text: str, expected: tuple[str, ...]) -> dict[str, str]:
     if missing:
         raise CodeExtractError(
             f"模型输出缺少必需的代码块：{missing}；"
-            f"实际识别到：{sorted(result) or '无'}（请检查提示词的输出格式约定）"
+            f"实际识别到：{sorted(result) or '无'}（请检查提示词的输出格式约定）",
+            missing=missing,
+            found=sorted(result),
         )
     return result
 
