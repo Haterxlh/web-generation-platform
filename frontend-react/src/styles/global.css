@@ -251,3 +251,273 @@ body {
   color: var(--color-text);
   border-color: var(--color-text-muted);
 }
+
+/* ===== 生成页 ===== */
+.gen-form {
+  margin-top: 20px;
+  padding: 20px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.gen-field {
+  display: block;
+}
+
+.gen-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.gen-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.gen-textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+.gen-counter {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  text-align: right;
+  color: var(--color-text-muted);
+}
+
+.gen-fieldset {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.gen-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 14px;
+}
+
+.gen-error {
+  margin: 16px 0 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+}
+
+.gen-button {
+  width: 100%;
+  height: 40px;
+  margin-top: 18px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-primary);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.gen-button:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.gen-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.gen-hint {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.gen-result {
+  margin-top: 24px;
+  padding: 20px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.gen-result-title {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.gen-result-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 1.9;
+}
+
+.gen-raw {
+  margin: 16px 0 0;
+  padding: 12px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.gen-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+/* 覆盖 .gen-button 的 100% 宽度，让按钮回到"行内按钮"尺寸 */
+.gen-button-inline {
+  width: auto;
+  min-width: 132px;
+  margin-top: 0;
+  padding: 0 20px;
+}
+
+.gen-note {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* ===== 项目列表页 ===== */
+.proj-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.proj-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 关键：flex 子项默认 min-width:auto，长需求文本会把卡片撑破，必须显式归零 */
+.proj-main {
+  min-width: 0;
+}
+
+.proj-prompt {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.proj-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.proj-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.proj-status-success {
+  color: #15803d;
+  background: #f0fdf4;
+}
+
+.proj-status-running {
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.proj-status-failed {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.proj-fail {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+}
+
+.proj-empty {
+  margin: 24px 0 0;
+  font-size: 14px;
+  color: var(--color-text-muted);
+}
+
+.proj-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.proj-page-button {
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.proj-page-button:hover:not(:disabled) {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.proj-page-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.proj-page-info {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}

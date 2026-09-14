@@ -31,7 +31,14 @@ const router = createBrowserRouter([
     element: <AppLayout />,
     children: [
       { index: true, element: <HomePage /> },
-      { path: 'generate', element: <GeneratePage /> },
+      {
+        path: 'generate',
+        element: (
+          <RequireAuth>
+            <GeneratePage />
+          </RequireAuth>
+        ),
+      },
       // 需要登录的页面：包一层 RequireAuth
       {
         path: 'projects',
