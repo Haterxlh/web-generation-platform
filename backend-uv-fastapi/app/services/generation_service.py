@@ -20,7 +20,7 @@ from app.schemas.generation_schemas import (
     GenerationListResponse,
     GenerationTaskResponse,
 )
-from app.utils.weg_gen.file_writer import write_files
+from app.utils.weg_gen.file_writer import write_debug_raw, write_files
 from app.agents.common import GenerationFailedError
 
 # 生成类型 → agents 层函数。
@@ -77,7 +77,8 @@ class GenerationService:
             task.reasoning_tokens = result.usage.reasoning_tokens
             task.duration_ms = int((time.perf_counter() - started) * 1000)
         except GenerationFailedError as error:
-            # 可预期的失败：异常上带着用量，一起记下来
+            # 可预期的失败：先把模型原文落盘（排查不必再烧一次 token 复现），再记用量
+            write_debug_raw(user_id, task.task_uuid, error.raw_output)
             task.status = "failed"
             task.error_msg = str(error)[:1000]
             task.input_tokens = error.usage.input_tokens

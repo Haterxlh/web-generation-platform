@@ -78,3 +78,30 @@ def write_files(user_id: int, task_uuid: str, files: dict[str, str]) -> str:
     # 注意：这里的 "/" 是手写的，不能用 str(directory) —— Windows 上 Path 会给出反斜杠，
     # 而这个值要存进数据库、还要拼进 URL，必须是正斜杠
     return f"{user_id}/{task_uuid}"
+
+
+# 失败排查用的原文文件名：下划线开头，明确标注"这不是产物"
+DEBUG_RAW_NAME = "_debug_raw.txt"
+
+
+def write_debug_raw(user_id: int, task_uuid: str, text: str | None) -> str | None:
+    """把模型原文写到任务目录下，供失败排查使用。
+
+    刻意不参与 file_list、也不写进数据库：它是调试附属物，不是产物。
+    目录复用产物目录，因此同样受预览票据保护，不会公开可读。
+
+    Args:
+        user_id: 发起用户 id。
+        task_uuid: 任务唯一标识。
+        text: 模型原文；为空则什么都不写。
+
+    Returns:
+        写入的相对路径；未写入时返回 None。
+    """
+    if not text:
+        return None
+
+    directory = task_dir(user_id, task_uuid)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / DEBUG_RAW_NAME).write_text(text, encoding="utf-8", newline="\n")
+    return f"{user_id}/{task_uuid}/{DEBUG_RAW_NAME}"

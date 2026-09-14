@@ -66,14 +66,22 @@ class GenerationResult:
 
 
 class GenerationFailedError(RuntimeError):
-    """生成失败（可预期的原因），并携带本次已经消耗掉的 token 用量。
+    """生成失败（可预期的原因），并携带本次消耗的 token 用量与模型原文。
 
     为什么异常要带用量：**失败的任务同样烧了 token**，记账不能只记成功的。
+    为什么异常要带原文：失败时原文若不落盘，排查就只能"再烧一次 token 复现"——
+    这是最贵的调试方式（2026-09-14 多文件失败复盘）。
     """
 
-    def __init__(self, message: str, usage: ModelUsage | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        usage: ModelUsage | None = None,
+        raw_output: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.usage = usage or ModelUsage()
+        self.raw_output = raw_output
 
 
 # DeepSeek 在 max_tokens 用尽时给出的 finish_reason

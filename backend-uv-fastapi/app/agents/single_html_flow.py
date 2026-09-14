@@ -79,6 +79,6 @@ def generate_single_html(prompt: str) -> GenerationResult:
         _ensure_complete_html(files["index.html"])  # 第二道：结构上验证真的写完了
     except (GenerationFailedError, CodeExtractError) as error:
         # 把用量挂到异常上再抛：失败也要记账
-        raise GenerationFailedError(str(error), usage) from error
+        raise GenerationFailedError(str(error), usage, raw_output=message.text) from error
     
     return GenerationResult(files=files, usage=usage)
