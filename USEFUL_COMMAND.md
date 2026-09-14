@@ -14,7 +14,7 @@ cd ./frontend-react
 npm run dev
 ```
 
-> Local:   http://localhost:5173/
+> Local: http://localhost:5173/
 
 ### 2. 后端
 
@@ -27,3 +27,11 @@ uv run fastapi dev
 
 > Server started at http://127.0.0.1:8000
 > Documentation at http://127.0.0.1:8000/docs
+
+2.2 后端测试命令
+
+```shell
+uv run pytest -q
+```
+
+> -q 含义：quiet，静默模式，不输出测试详情
