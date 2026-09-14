@@ -75,6 +75,7 @@ class GenerationService:
             task.input_tokens = result.usage.input_tokens
             task.output_tokens = result.usage.output_tokens
             task.reasoning_tokens = result.usage.reasoning_tokens
+            task.duration_ms = int((time.perf_counter() - started) * 1000)
         except GenerationFailedError as error:
             # 可预期的失败：异常上带着用量，一起记下来
             task.status = "failed"
@@ -92,6 +93,11 @@ class GenerationService:
             task.duration_ms = int((time.perf_counter() - started) * 1000)
             GenerationTaskRepository.update(db, task)
             raise HTTPException(status_code=500, detail=f"生成失败：{task.error_msg}") from error
+
+        # 成功路径：把 status/result_dir/file_list/用量 一次性提交入库，再把结果交给接口层
+        # 成功路径提交 + 返回（缺少这两行会导致 500 ResponseValidationError）
+        GenerationTaskRepository.update(db, task)
+        return GenerationService._to_response(task)
 
     @staticmethod
     def get_task(db: Session, user_id: int, task_uuid: str) -> GenerationTaskResponse:
