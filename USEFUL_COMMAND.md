@@ -216,3 +216,43 @@ uv run alembic current
 > （easy 6 步/12k/1 文件、medium 12 步/40k/4、hard 20 步/80k/8）。
 > ⚠️ 实际值（实际步数/文件数/结果）由**阶段 6 的生成循环结束时**调用
 > `GenerationPlanRepository.mark_outcome()` 回填；在那之前该表只有预估侧有值。
+
+### 10. Agent 生成模式（阶段 6 起）
+
+10.1 循环行为 / 三层自主性 / 端到端自检
+
+```shell
+cd ./backend-uv-fastapi
+uv run python -m app.utils.utils_check.check_web_agent
+```
+
+> 四段：
+> ① 离线（假模型）：门禁拦"只写 1 个文件就收工"、故障注入后模型能否改正、步数刹车保留产物；
+> ② ⚠️ 真实模型：**三层自主性**（自主调工具 / 自主拆解 / 响应工具报错）+ **思考与非思考两种客户端对照**
+> （同一份清单、同一次故障注入，用于确定默认客户端）；
+> ③ 端到端：需要 API **与 worker 都是新代码**在跑；
+> ④ 进程内流水线：真模型 + 真 MySQL/PG + 真落盘，不需要 API/worker，结束后自动清理。
+
+⚠️ **改了 worker 相关代码必须重启 arq worker**（它不热重载，FastAPI dev 会热重载）。
+否则提交 `gen_type="agent"` 的任务会在旧 worker 上立刻失败（"生成类型 agent 尚未实现"）：
+
+```shell
+cd ./backend-uv-fastapi
+arq app.core.worker.WorkerSettings          # Ctrl+C 后用同一条命令重启
+```
+
+10.2 手工试用 agent 模式
+
+```shell
+# 提交（立刻 202，真正的生成由 worker 异步执行）：
+curl -X POST http://127.0.0.1:8000/api/generation/create \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"prompt":"做一个单页待办清单，能添加/勾选/删除，数据存 localStorage","gen_type":"agent"}'
+
+# 轮询阶段（routing → retrieving → planning → generating → done）：
+curl http://127.0.0.1:8000/api/generation/<task_uuid> -H "Authorization: Bearer <token>"
+```
+
+> 带附件时再加 `"session_uuid":"<uuid>"`（附件必须先用 `/api/agent/source/upload` 传进该会话）。
+> 三种模式并存：`single` / `multi`（旧实现，阶段 7 做对照）与 `agent`（新流水线）。
+> 难度档位与"预估 vs 实际"对账见 `generation_plan` 表（`docs/agent_refactor_plan.md` 阶段 5）。

@@ -32,9 +32,15 @@ class GenerationTask(MysqlBase):
     # prompt 用 Text 而不是 String(256)。 → 用户需求可能几百字；VARCHAR 在大字段上性能无优势，Text 更合适。
     prompt: Mapped[str] = mapped_column("prompt", Text, comment="用户需求原文")
 
-    # 生成类型：single / multi（字符串存库，可读；合法值由 Pydantic Literal 兜住）
+    # 生成类型：single / multi / agent（字符串存库，可读；合法值由 Pydantic Literal 兜住）
     gen_type: Mapped[str] = mapped_column(
-        "genType", String(16), comment="生成类型:single/multi"
+        "genType", String(16), comment="生成类型:single/multi/agent"
+    )
+
+    # 来源会话（阶段 6 起）：agent 模式带附件时，附件与别名都挂在会话上，
+    # 生成时必须按它取回 digest。跨库只存 id，不建外键、不 JOIN。
+    session_uuid: Mapped[str | None] = mapped_column(
+        "sessionUuid", String(64), comment="来源会话标识(agent_session.session_uuid)"
     )
 
     # 状态：running / success / failed

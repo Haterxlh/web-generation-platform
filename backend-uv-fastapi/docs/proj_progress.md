@@ -147,8 +147,8 @@
     2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
-### 模块：Agent 框架（阶段 0~5）
-- **状态**：进行中（阶段 0、1、2、3、4、5 已完成；阶段 6~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
+### 模块：Agent 框架（阶段 0~6）
+- **状态**：进行中（阶段 0~6 已完成；阶段 7 新旧对照、阶段 8 前端对接与二期 RAG 见 `docs/agent_refactor_plan.md`）
 - **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
   并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示
 - **已交付内容**：
@@ -416,6 +416,62 @@
       不影响交付完整性（门禁只认"清单里的文件是否都写了"），但若将来要做产物对比，需要先归一
     - 兜底计划固定为单文件 `index.html`：对"多页面需求但规划失败"的场景只能给出一个页面，
       属于已知取舍（生成链路不阻塞优先于兜底质量）
+  - **阶段 6 遗留**：
+    - ⚠️ **`gen_type="agent"` 需要重启 arq worker 才能跑通**：FastAPI dev 会自动热重载，
+      但 **arq worker 不会** —— 旧 worker 上仍是 `_GENERATORS` 老逻辑，
+      提交 agent 任务会立刻失败并报"生成类型 agent 尚未实现"。
+      重启命令：`arq app.core.worker.WorkerSettings`（详见 `USEFUL_COMMAND.md`）
+    - **端到端 HTTP 段（③）因此尚未跑过**：重启 worker 后执行
+      `uv run python -m app.utils.utils_check.check_web_agent` 即可补齐
+      （create(agent) → 轮询阶段 → 终态 → 预览 → 对账）
+    - **agent 模式没有写进前端**：当前只有 `/api/generation/create` 的 `gen_type` 支持它，
+      前端仍是 single/multi（阶段 8 做会话式 Generate 页时一起改）
+    - **循环中途不向用户提问**、**不做 LangGraph checkpoint 断点恢复**：都是刻意的 V1 边界
+    - 本次验证留下若干临时账号（`wagent*` / `probe*` / `poll*`）与 1 条失败任务
+      （`gen_type=agent`，因旧 worker 报"尚未实现"），如需清理请手动处理
+- **阶段 6 交付（2026-09-15）★主流程打通**：
+  - **内层 ReAct 环**：`app/agents/web/web_agent.py` —— 手写 `StateGraph`
+    （`model`(bind_tools) → 条件边 → `ToolNode` → 回 `model`）；每次生成新建 store + 新建图；
+    用量逐轮累加；**三道刹车**（`StageBudget` 步数 / 输出 token / 连续无进展）；
+    **门禁 = `store.missing(plan 清单)`**，不过则带"缺件清单"**定向补缺（最多 2 轮）**，仍不过则失败；
+    `tool_wrapper` 注入点用于**故障注入**（自检验证"工具报错后能否改正"）；
+    `on_step` 回调推进阶段；trace 只记轮次与文件名、**不记文件正文**
+  - **提示词改写**：`app/prompts/web_agent_system.md` —— **去掉硬编码交付清单**，
+    只留角色 + 工具语义 + 收工纪律（清单改由 `FilePlan` 注入消息；单测断言提示词里不再出现 `index.html`）
+  - **外层编排图**：`app/agents/orchestrator.py` —— `ROUTING →（DIGESTING）→ RETRIEVING →
+    PLANNING(含 MERGE) → GENERATING → GATE`；**纯函数**（不碰库、不落盘），
+    通过 `on_stage` / `on_plan` 回调把阶段与规划交给 service；
+    完备度不足时停在 `clarifying`（暂停等人，**不标 failed**）；四个节点链全部可注入（离线测试的前提）
+  - **接线与落库**：新增 `gen_type="agent"`（+ 可选 `session_uuid`，用于带附件）、
+    `app/services/agent_generation_service.py`（阶段推进、写 `generation_plan` 预估侧、
+    循环结束 `mark_outcome()` 回填实际值、落盘产物与 trace、三种终态各自的处理）；
+    `execute_pipeline` 增加 agent 分支（局部 import 避免与服务层成环）；
+    `generation_task` 新增 `sessionUuid` 列 + `sql/scripts/alter_generation_task_session.sql`
+  - **偏差 / 计划外增补**：
+    1. **MERGE 不单独上报阶段**（并入 PLANNING 明细）：`AgentStage` 没有 MERGING，
+       新增枚举值会要求前端同步改类型 —— 留到阶段 8 前端对接时一起做；
+    2. **`tool_wrapper` 而不是直接注入 tools**：工具必须绑定**本次请求的 store**，
+       外部传一个绑定别的 store 的工具集会让产物写进游魂 store、门禁永远不过
+       （自检第一版就这么错过，现象看起来像"模型不会写文件"）；
+    3. **V1 不做"回到 ⑫ 重规划"**：门禁不过时优先**定向补缺**（保留已写文件），
+       重规划要重跑 plan 并丢掉已写文件，代价高且没有数据支持它更有效 —— 留给阶段 7 用实测决定
+  - **验证情况**：`pytest` **438 个用例全绿**（387 → 新增 51，全程离线）；
+    `check_web_agent` 四段 —— ① 离线（门禁拦 1/3、故障注入后改正、步数刹车保留产物）全通过；
+    ② **真实模型三层自主性 + 思考/非思考对照**（用同一份清单、同一故障注入）：
+
+    | 客户端 | 门禁 | 步数 | 输入 token | 输出 token | 思考 token | 耗时 |
+    |---|---|---|---|---|---|---|
+    | 思考模式 | ✅ | 3 | 13462 | 6585 | 217 | 20.0s |
+    | 非思考模式 | ✅ | 4 | 19433 | 7614 | 0 | 22.1s |
+
+    两者都"自主调工具 + 自主拆解 + 看懂注入的错误并改正"；**思考模式更省**（输出少 1029、步数少 1），
+    故 `DEFAULT_THINKING` 保持 `True`（**默认客户端由这次数据确定**）；
+    ③ 端到端 HTTP 段**待 worker 重启**（见下"待办与遗留"）；
+    ④ **进程内流水线**（真模型 + 真 MySQL/PG + 真落盘）通过 ——
+    `status=success` / 阶段 `done` / 19.8s / in=13120 out=4917 /
+    产物 `['index.html']` 落盘且 trace 落盘 /
+    对账行：预估 `easy, 1 文件, 预算 6 步` ↔ 实际 `2 步, 1 文件, success`，
+    结束后任务行、规划行、产物目录全部清理
 
 ## 2. 项目级约定（跨模块通用）
 - 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
@@ -439,6 +495,11 @@
 - **每次生成都要留下「预估 vs 实际」**（同一行）：预估 = 模型声明难度 / 复核后难度 /
   计划文件数 / 预算步数与 token；实际 = 实际步数 / 实际文件数 / 结果 / 完成时间 ——
   这是后续优化提示词与新档位调参的证据来源（`check_plan.py` 的对账表即读它）
+- **agent 模式（`gen_type="agent"`）的三条边界**：循环中途不向用户提问（信息不足只在 ROUTING 判）、
+  完成判定权在 Python 侧（`store.missing`，模型说"我完成了"不算数）、
+  每次生成新建 store 与新图（**绝不做模块级全局变量**）
+- ⚠️ **改了 worker 代码必须重启 arq worker**（它不热重载；FastAPI dev 会）：
+  否则新 `gen_type` 会在旧 worker 上报"尚未实现"
 
 ## 3. 下一步计划（按优先级）
 - [x] **Agent 框架阶段 2**（已完成 2026-09-15，见上方模块进度）
@@ -450,13 +511,14 @@
 - [x] **Agent 框架阶段 5**（已完成 2026-09-15）：plan-agent —— `StageBudget`（难度→步数/token/文件数）、
       `FilePlan` 契约、`agents/plan/plan_agent.py`、`generation_plan` 表（含**预估 vs 实际**对照字段）
       与迁移 `b7c1d2e3f4a5`（见上方模块进度）
-- [ ] **Agent 框架阶段 6（★主流程打通）**：`agents/web/web_agent.py`（model ⇄ ToolNode 的 ReAct 环）、
-      `agents/orchestrator.py`（外层需求装配图：router → digest → need_rag → merge → plan → web-agent → gate）、
-      `app/prompts/web_agent_system.md`（**去掉交付清单**，只留角色 + 工具语义）、统一入口接口；
-      要点：**完成判定权在 Python 侧**（`store.missing(plan 清单)`）、工具永不抛异常、
-      步数/预算按 `StageBudget` 刹车、循环中途不向用户提问、
-      **结束时回填 `generation_plan` 的实际值**（步数 / 文件数 / 结果）
-      （归属：Agent 框架）
+- [x] **Agent 框架阶段 6（★主流程打通）**（已完成 2026-09-15）：`web_agent.py`（ReAct 环 + 三道刹车 +
+      门禁 + 定向补缺）、`orchestrator.py`（外层装配图）、`web_agent_system.md`、
+      `gen_type="agent"` 与 `agent_generation_service.py`（落库 + 回填实际值 + 落盘 trace）；
+      ⚠️ **需重启 arq worker 后**才能通过 HTTP 端到端（见上方遗留）
+- [ ] **Agent 框架阶段 7（新旧对照 + 退役判断）**：用**同一需求**分别跑
+      `single` / `multi` / `agent` 三种模式，记录并对比**成功率 / 产物完整度 / 总 token / 耗时**；
+      同时用 `generation_plan` 的"预估 vs 实际"数据校正难度档位与提示词
+      —— **只有数据支持才退役旧实现**，否则回退并重新评估（归属：Agent 框架）
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
@@ -523,6 +585,16 @@
   `models/agent/generation_plan.py` + Alembic `b7c1d2e3f4a5` + `repositories/agent/plan_repository.py`
   （含 `mark_outcome()` 回填实际值与 `list_recent()` 对账查询）、
   新增 `check_plan.py` 与 52 个离线用例（共 387 个）
+- **2026-09-15（Agent 框架阶段 6）★主流程打通**：落地**内层 ReAct 环 + 外层编排图 + 接线** ——
+  `agents/web/web_agent.py`（LangGraph `StateGraph`：model ⇄ ToolNode；三道刹车；
+  **门禁 = `store.missing(plan 清单)`**；定向补缺最多 2 轮；`tool_wrapper` 故障注入点；
+  trace 不记正文）、`app/prompts/web_agent_system.md`（**去掉硬编码交付清单**）、
+  `agents/orchestrator.py`（需求装配图，纯函数 + 阶段/规划回调；信息不足停在 clarifying）、
+  `services/agent_generation_service.py`（阶段推进 + 写 `generation_plan` 预估侧 +
+  `mark_outcome()` 回填实际值 + 落盘产物与 trace + 三态终态）、
+  `gen_type="agent"` + 可选 `session_uuid`、`generation_task.sessionUuid` 列与 DDL 脚本；
+  新增 `check_web_agent.py` 与 51 个离线用例（共 438 个）；
+  **默认客户端由实测确定**：思考模式 6585 输出 token / 3 步，非思考 7614 / 4 步（两者都通过门禁）
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）

@@ -14,9 +14,20 @@ class GenerateRequest(BaseModel):
     prompt: str = Field(min_length=2, max_length=2000, description="网页需求描述")
 
     # Literal 让非法值在进业务层之前就被挡掉（非法值会 422，错误信息自动带可选值）
-    gen_type: Literal["single", "multi"] = Field(
+    gen_type: Literal["single", "multi", "agent"] = Field(
         default="single",
-        description="生成类型：single=单个 HTML 文件；multi=html+css+js 多文件",
+        description=(
+            "生成类型：single=单个 HTML 文件；multi=html+css+js 多文件；"
+            "agent=Agent 流水线（意图识别→附件理解→检索判定→需求归并→规划→工具调用生成→门禁）"
+        ),
+    )
+
+    session_uuid: str | None = Field(
+        default=None,
+        description=(
+            "可选：来源会话标识。agent 模式带附件时必须给（@docN 的作用域是会话），"
+            "不给则按纯文本需求生成"
+        ),
     )
 
 

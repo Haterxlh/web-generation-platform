@@ -879,7 +879,7 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
     兜底计划固定单文件 `index.html`（对"多页面但规划失败"只能给一个页面）；
     难度是否长期偏保守需要阶段 6/7 的真实数据（对账表就是为此准备的）
 
-### 阶段 6｜web-agent + 外层编排图 ★主流程打通
+### 阶段 6｜web-agent + 外层编排图 ★主流程打通 —— ✅ 已完成（2026-09-15）
 - **产出**：`agents/web/web_agent.py`、`agents/orchestrator.py`、
   `app/prompts/web_agent_system.md`（**去掉交付清单**，只留角色 + 工具语义）、统一入口接口
 - **要点**：
@@ -903,6 +903,46 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   3. **是否响应失败**：故意让一次 `write_file` 返回错误，模型是否读了错误并改正重试
 - **验收（门禁）**：模型只写 1 个文件时任务判 `failed`，而不是 `success`
 - **验收（端到端）**：create → 轮询阶段 → success → preview-ticket → 打开产物；`pytest` 全绿
+- **实际交付与偏差（2026-09-15）**：
+  - 交付：`app/agents/web/web_agent.py`、`app/agents/orchestrator.py`、
+    `app/prompts/web_agent_system.md`、`app/services/agent_generation_service.py`、
+    `gen_type="agent"`（`app/schemas/generation_schemas.py`、`app/services/generation_service.py`）、
+    `generation_task.sessionUuid` 列 + `sql/scripts/alter_generation_task_session.sql`、
+    `app/utils/utils_check/check_web_agent.py`、`tests/test_web_agent.py`、
+    `tests/test_orchestrator.py`、`tests/test_agent_generation_service.py`（+51 用例，共 438 个）
+  - **偏差 1：MERGE 不单独上报阶段** —— `AgentStage` 没有 `MERGING`，新增枚举值要同步改前端类型；
+    归并很快，并入 `PLANNING` 的 `stage_detail`（"正在归并需求并规划文件结构"）。
+    新增枚举值留到阶段 8 前端对接时一起做。
+  - **偏差 2：`tool_wrapper` 而不是直接注入工具集** —— 工具必须绑定**本次请求的 store**
+    （铁律 1）。自检第一版把 `build_agent_tools(另一个 store)` 传进去，
+    结果产物写进了那个游魂 store、本轮 store 始终为空、门禁永远不过 ——
+    现象看起来像"模型根本不会写文件"。改成包装器 `(store, tools) -> tools` 后，
+    故障注入仍可行（"第一次 write_file 必失败"），且委托的是同一个 store。
+  - **偏差 3：V1 不做"回到 ⑫ 重规划"** —— 门禁不过时优先**定向补缺**（保留已写文件，最多 2 轮），
+    仍不过则失败。重规划要重跑 plan 并丢掉已写文件，代价高且没有数据支持它更有效；
+    留给阶段 7 用实测决定。
+  - **偏差 4：`on_plan` 回调签名是 `(PlanResult, FinalRequirement)`** ——
+    写 `generation_plan` 需要"计划"与"最终需求"两样东西，而它们出自不同节点；
+    只给计划的话，写进去的需求字段就只能编一个。
+  - **默认客户端由实测确定**（用户要求"先两种都跑一遍再定默认"）：
+    同一份交付清单 + 同一次故障注入，两种客户端各跑一次 ——
+
+    | 客户端 | 门禁 | 步数 | 输入 token | 输出 token | 思考 token | 耗时 |
+    |---|---|---|---|---|---|---|
+    | **思考模式**（默认） | ✅ | 3 | 13462 | **6585** | 217 | 20.0s |
+    | 非思考模式 | ✅ | 4 | 19433 | 7614 | 0 | 22.1s |
+
+    两者都做到了三层自主性（自主调工具 / 自主拆解 / 看懂注入的错误并改正）；
+    **思考模式更省**（输出少 1029、步数少 1），因此 `DEFAULT_THINKING = True`。
+  - **实测（进程内流水线，真模型 + 真 MySQL/PG + 真落盘）**：
+    `status=success`、阶段 `done`、19.8s、in=13120 out=4917；产物 `['index.html']` 落盘、
+    `_debug_trace.jsonl` 落盘；对账行 = 预估 `easy / 1 文件 / 预算 6 步` ↔ 实际 `2 步 / 1 文件 / success`；
+    脚本结束清理无残留。中途还顺带验证了阶段 4 的越权防线：探针用 `user_id=0` 时被检索层当场拒绝。
+  - ⚠️ **HTTP 端到端（③）待 worker 重启后补跑**：FastAPI dev 会热重载（`gen_type="agent"` 已被接受），
+    但 **arq worker 不会** —— 旧 worker 上提交 agent 任务会立刻失败（"生成类型 agent 尚未实现"）。
+    重启 `arq app.core.worker.WorkerSettings` 后执行 `check_web_agent` 即可补齐这一段。
+  - **已知代价**：agent 模式尚未进前端（阶段 8）；无 checkpoint 断点恢复；
+    提示词与预算档位还需阶段 7 的真实数据校正。
 
 ### 阶段 7｜新旧对照 + 退役 ★关键判断
 - **要点**：用**同一个需求**分别跑旧实现（`generate_multi_file`）与新的 web-agent
@@ -990,6 +1030,10 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
 | 2026-09-15 | 阶段 5：文件清单稳定性与难度判定（真实模型，各 3 次） | 待办清单（简单）/ 企业官网四页 + 数据文件（复杂） | 简单：3 次均 `medium` 且清单完全一致（`index.html`+`style.css`+`script.js`）；复杂：3 次均 `hard`、7 个文件，仅数据文件名在 `products.json`/`data.json` 间波动 | **通过** —— 清单稳定是门禁可用的前提；难度与文件数匹配（未出现 easy 交 6 个文件） |
 | 2026-09-15 | 阶段 5：`generation_plan` 往返与对账（真实 PG） | 规划写入 → 读回 → 回填实际值 → 对账查询 | JSONB 保真；`mark_outcome()` 写入实际步数/文件数/结果/完成时间并刷新 `update_time`；`list_recent()` 打出"模型难度 vs 最终难度 vs 计划文件 vs 预算步数 vs 实际步数"对照表；脚本结束清理无残留 | **通过** —— 预估与实际同行的结构可用，这是后续优化提示词的证据来源 |
 | ✅ | 阶段 5：plan-agent + `StageBudget` + `generation_plan` —— **已完成（2026-09-15）** | — | — | — |
+| 2026-09-15 | 阶段 6：三层自主性 + 客户端对照（真实模型，同一清单 + 故障注入） | "第一次 write_file 必失败" + 待办清单需求 | 思考模式：门禁 ✅、3 步、out 6585、20.0s；非思考：门禁 ✅、4 步、out 7614、22.1s；两者都自主调工具、自主拆解、看懂错误并改正 | **通过** —— 默认客户端定为**思考模式**（数据支持，而非偏好） |
+| 2026-09-15 | 阶段 6：进程内完整流水线（真模型 + 真 MySQL/PG + 真落盘） | 一个待办清单需求，`gen_type=agent` | `success` / `done` / 19.8s / in=13120 out=4917；产物 `['index.html']` 与 `_debug_trace.jsonl` 落盘；对账行 预估 `easy,1 文件,6 步` ↔ 实际 `2 步,1 文件,success`；清理无残留 | **通过** —— "编排 → 落库 → 落盘 → 回填实际值"整条链路可用 |
+| 2026-09-15 | 阶段 6：越权防线（真实链路顺带验证） | 探针用 `user_id=0` | 检索层当场 `ValueError`："检索必须带上有效的 user_id（越权风险）" | **通过** —— 阶段 4 的安全边界在真实链路上确实拦得住 |
+| ✅ | 阶段 6：web-agent + 编排图 + 接线 —— **已完成（2026-09-15）**（HTTP 端到端待 worker 重启后补跑） | — | — | — |
 | ✅ | 阶段 0：异步骨架 —— **已完成（2026-09-15）**，见上方两条实测记录 | — | — | — |
 | | 阶段 6：模型自主性三层验证 | | | |
 | | 阶段 7：新旧实现对照 | | | |

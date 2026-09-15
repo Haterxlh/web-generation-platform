@@ -37,13 +37,17 @@ from app.utils.weg_gen.file_writer import write_debug_raw, write_files
 
 logger = logging.getLogger(__name__)
 
-# 生成类型 → agents 层函数。
-# 阶段 6 接入 web-agent 时，只要在这里把实现换掉，本文件其它地方一行都不用动
-# （测试也正是靠替换这个字典来注入假生成器，从而完全离线跑通全流程）。
+# 生成类型 → agents 层函数（**simple 模式**：一次调用直接出产物）。
+# 阶段 6 新增的 "agent" 模式不走这里 —— 它需要 db/task（要写阶段、写规划记录、回填实际值），
+# 因此由 `agent_generation_service` 单独处理，见 execute_pipeline 里的分支。
+# 测试正是靠替换这个字典来注入假生成器，从而完全离线跑通全流程。
 _GENERATORS = {
     "single": generate_single_html,
     "multi": generate_multi_file,
 }
+
+# 需要走 Agent 流水线的生成类型
+AGENT_GEN_TYPE = "agent"
 
 
 class GenerationService:
@@ -63,17 +67,29 @@ class GenerationService:
         Args:
             db: 数据库会话（由 FastAPI 依赖注入）。
             user_id: 当前登录用户 id。
-            req: 生成请求（需求 + 类型）。
+            req: 生成请求（需求 + 类型 + 可选来源会话）。
 
         Returns:
             202 响应的内容：任务标识 + 初始阶段 + 轮询地址。
 
         Raises:
-            HTTPException: 生成类型未实现 → 501；任务队列不可用 → 503。
+            HTTPException: 生成类型未实现 → 501；来源会话不属于当前用户 → 404；
+                任务队列不可用 → 503。
         """
+        is_agent = req.gen_type == AGENT_GEN_TYPE
         generator = _GENERATORS.get(req.gen_type)
-        if generator is None:
+        if generator is None and not is_agent:
             raise HTTPException(status_code=501, detail=f"生成类型 {req.gen_type} 尚未实现")
+
+        if is_agent:
+            # ⚠️ 越权防线：必须在建任务之前校验会话归属。
+            # 不校验的话，别人传一个不属于自己的 session_uuid，生成时就会把**别人的附件 digest**
+            # 读进提示词 —— 等于把私人资料喂给了当前用户。
+            # 局部 import：agent_generation_service 反向依赖本模块（要复用 _set_stage / _fail），
+            # 模块级互相 import 会成环。
+            from app.services.agent_generation_service import AgentGenerationService
+
+            AgentGenerationService.validate_session(user_id, req.session_uuid)
 
         started = time.perf_counter()
 
@@ -83,6 +99,7 @@ class GenerationService:
             user_id=user_id,
             prompt=req.prompt,
             gen_type=req.gen_type,
+            session_uuid=req.session_uuid if is_agent else None,
             status="running",
             stage=AgentStage.QUEUED.value,
             progress=STAGE_PROGRESS[AgentStage.QUEUED],
@@ -186,6 +203,14 @@ class GenerationService:
             if task is None:
                 # 任务被删了（逻辑删除）或 uuid 有误：没有任何可写的东西，直接收工
                 logger.warning("任务 %s 不存在或已删除，跳过执行", task_uuid)
+                return
+
+            if task.gen_type == AGENT_GEN_TYPE:
+                # Agent 流水线：自己推进阶段（routing → … → done/failed）、写规划记录、
+                # 回填实际值。它需要 db 与 task，所以不走 _GENERATORS 那条"只传 prompt"的路。
+                from app.services.agent_generation_service import AgentGenerationService
+
+                AgentGenerationService.execute(db, task, started)
                 return
 
             generator = _GENERATORS.get(task.gen_type)

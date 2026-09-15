@@ -87,6 +87,9 @@ def write_files(user_id: int, task_uuid: str, files: dict[str, str]) -> str:
 # 失败排查用的原文文件名：下划线开头，明确标注"这不是产物"
 DEBUG_RAW_NAME = "_debug_raw.txt"
 
+# Agent 循环的逐轮记录（阶段 6 起）：一行一轮，可直接 tail
+DEBUG_TRACE_NAME = "_debug_trace.jsonl"
+
 
 def write_debug_raw(user_id: int, task_uuid: str, text: str | None) -> str | None:
     """把模型原文写到任务目录下，供失败排查使用。
@@ -109,3 +112,28 @@ def write_debug_raw(user_id: int, task_uuid: str, text: str | None) -> str | Non
     directory.mkdir(parents=True, exist_ok=True)
     (directory / DEBUG_RAW_NAME).write_text(text, encoding="utf-8", newline="\n")
     return f"{user_id}/{task_uuid}/{DEBUG_RAW_NAME}"
+
+
+def write_debug_trace(user_id: int, task_uuid: str, jsonl: str | None) -> str | None:
+    """把 Agent 循环的逐轮记录写成 ``_debug_trace.jsonl``。
+
+    这是 Harness 六件套里"可观测"的落盘形态（§3.1 ⑤）：
+    Agent 的失败常常不是"最后一次调用错了"，而是"第 3 步的工具返回被模型忽略了"——
+    没有逐轮记录，排查只能靠猜。与 `write_debug_raw` 一样，它**不是产物**：
+    不进 file_list、不写数据库，只在产物目录里留证据。
+
+    Args:
+        user_id: 发起用户 id。
+        task_uuid: 任务唯一标识。
+        jsonl: JSON Lines 文本；为空则什么都不写。
+
+    Returns:
+        写入的相对路径；未写入时返回 None。
+    """
+    if not jsonl:
+        return None
+
+    directory = task_dir(user_id, task_uuid)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / DEBUG_TRACE_NAME).write_text(jsonl, encoding="utf-8", newline="\n")
+    return f"{user_id}/{task_uuid}/{DEBUG_TRACE_NAME}"
