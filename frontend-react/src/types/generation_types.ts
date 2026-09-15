@@ -9,6 +9,20 @@ export type GenType = 'single' | 'multi'
 /** 生成任务状态（对应后端 status 字段的取值） */
 export type GenStatus = 'running' | 'success' | 'failed'
 
+/**
+ * Agent 流水线阶段（对应后端 app/agents/stages.py 的 AgentStage）。
+ * 与 status 正交：status 表示"活着还是结束了"，stage 表示"走到哪一步了"。
+ */
+export type AgentStage =
+  | 'queued'
+  | 'routing'
+  | 'digesting'
+  | 'retrieving'
+  | 'planning'
+  | 'generating'
+  | 'done'
+  | 'failed'
+
 /** 发起一次生成的请求体：对应后端 GenerateRequest */
 export interface GenerateRequest {
   /** 网页需求描述（后端限制 2~2000 字） */
@@ -27,6 +41,14 @@ export interface GenerationTask {
   gen_type: GenType
   /** 状态：running / success / failed */
   status: GenStatus
+  /** 当前 Agent 流水线阶段 */
+  stage: AgentStage
+  /** 阶段中文文案（后端已翻译好，前端直接展示，不用自己维护枚举字典） */
+  stage_text: string
+  /** 阶段明细文案，可为 null */
+  stage_detail: string | null
+  /** 进度百分比 0~100 */
+  progress: number
   /** 产物相对目录，失败或未完成时为 null */
   result_dir: string | null
   /** 产物文件名列表（后端已把 JSON 字符串解析成数组） */
@@ -45,6 +67,27 @@ export interface GenerationTask {
   output_tokens: number | null
   /** 其中思考 token 数 */
   reasoning_tokens: number | null
+}
+
+/**
+ * 提交生成后的即时响应：对应后端 GenerateAcceptedResponse。
+ * 后端已改为异步执行，提交接口只返回"已受理"，结果要靠轮询 GenerationTask 拿。
+ */
+export interface GenerateAccepted {
+  /** 任务唯一标识（轮询与预览都用它） */
+  task_uuid: string
+  /** 初始状态，固定为 running */
+  status: GenStatus
+  /** 初始阶段，固定为 queued */
+  stage: AgentStage
+  /** 阶段中文文案 */
+  stage_text: string
+  /** 初始进度，固定为 0 */
+  progress: number
+  /** 轮询地址（后端给出，前端不必自己拼） */
+  poll_url: string
+  /** 建议轮询间隔（毫秒，由后端统一定义轮询节奏） */
+  poll_interval_ms: number
 }
 
 /** 生成历史列表（分页）：对应后端 GenerationListResponse */

@@ -2,6 +2,8 @@
 # 职责：只做数据库操作（CRUD），不写业务规则
 # 与 user_repository.py 保持一致：所有查询都带 is_delete == 0（逻辑删除）
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -105,3 +107,26 @@ class GenerationTaskRepository:
             .where(GenerationTask.user_id == user_id, GenerationTask.is_delete == 0)
         )
         return db.scalar(stmt) or 0
+
+    @staticmethod
+    def list_stale_running(db: Session, deadline: datetime) -> list[GenerationTask]:
+        """列出"仍标记为 running，但最后更新时间早于 deadline"的任务（僵尸回收用）。
+
+        为什么要靠 updateTime 判断陈旧：worker 进程被强杀时来不及写任何终态，
+        库里只会留下一条永远 running 的记录 —— 判据只能是"它多久没动过了"。
+        ⚠️ 因此推进阶段时必须**主动**写 updateTime（本表 DDL 没有 ON UPDATE 子句），
+        详见 generation_service._set_stage。
+
+        Args:
+            db: 数据库会话。
+            deadline: 时间阈值；updateTime 早于它的才算僵尸。
+
+        Returns:
+            僵尸任务列表（可能为空）。
+        """
+        stmt = select(GenerationTask).where(
+            GenerationTask.status == "running",
+            GenerationTask.is_delete == 0,
+            GenerationTask.update_time < deadline,
+        )
+        return list(db.scalars(stmt))

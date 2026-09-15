@@ -34,6 +34,11 @@ function formatTime(value: string | null): string {
   return value.replace('T', ' ').slice(0, 16)
 }
 
+/** 统一的错误文案：抽出来是为了让"首屏加载"和"翻页加载"两处不各写一份 */
+function toErrorMessage(err: unknown): string {
+  return err instanceof ApiError ? err.message : '加载失败，请稍后重试'
+}
+
 /** 项目列表页：我的生成历史（分页），可重新打开预览 */
 export default function ProjectsPage() {
   const { openPreview, openingUuid, error: previewError } = useOpenPreview()
@@ -44,7 +49,7 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // useCallback：让 load 的引用保持稳定，否则下面的 useEffect 每次渲染都会重跑（→ 无限请求）
+  /** 用户点击翻页时的加载：同步置位 loading / error（事件处理器里 setState 不受 effect 规则约束） */
   const load = useCallback(async (targetPage: number): Promise<void> => {
     setLoading(true)
     setError(null)
@@ -54,18 +59,38 @@ export default function ProjectsPage() {
       setTotal(data.total)
       setPage(targetPage)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : '加载失败，请稍后重试')
+      setError(toErrorMessage(err))
     } finally {
       setLoading(false)
     }
   }, [])
 
-  // 首次进入加载第 1 页（开发环境的 StrictMode 会让 effect 跑两次，属预期行为，见讲解 6.4②）
-  // void 表示忽视 load 的返回值
-  // 依赖 load 函数的引用
+  // 首次进入加载第 1 页。
+  // ⚠️ 这里**刻意不复用 load()**：eslint 规则 react-hooks/set-state-in-effect 不允许
+  // effect 体内（哪怕只是间接）同步调用 setState —— 而 load 的第一句就是 setLoading(true)。
+  // 该规则认可的形态是"在回调函数里 setState"，所以下面把 setState 全部放进 Promise 回调。
+  // 顺带用 cancelled 兜住"组件已卸载（含 StrictMode 开发期二次挂载）后请求才返回"的竞态。
   useEffect(() => {
-    void load(1)
-  }, [load])
+    let cancelled = false
+
+    listGenerations(1, PAGE_SIZE)
+      .then((data) => {
+        if (cancelled) return
+        setItems(data.items)
+        setTotal(data.total)
+        setPage(1)
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(toErrorMessage(err))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 

@@ -10,6 +10,7 @@ from app.core.mysql_db import get_mysql_db
 from app.core.jwt_config import jwt_settings
 from app.models.user import User
 from app.schemas.generation_schemas import (
+    GenerateAcceptedResponse,
     GenerateRequest,
     GenerationListResponse,
     GenerationTaskResponse,
@@ -24,16 +25,26 @@ from app.utils.jwt.security import create_preview_ticket
 router = APIRouter(prefix="/generation", tags=["生成"])
 
 
-@router.post("/create", response_model=GenerationTaskResponse, summary="创建并执行一次生成")
-def create_generation(
+@router.post(
+    "/create",
+    status_code=202,
+    response_model=GenerateAcceptedResponse,
+    summary="提交一次生成（异步执行，立即返回）",
+)
+async def create_generation(
     req: GenerateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_mysql_db),
-) -> GenerationTaskResponse:
-    """创建并执行一次生成（同步等待结果）。
+) -> GenerateAcceptedResponse:
+    """提交生成任务并**立即返回 202**（不再同步等待结果）。
 
-    这个接口会阻塞到模型生成完成，通常 30~120 秒，前端要相应调大超时。
-    实时进度看步骤 10 的流式接口。
+    真正的生成由独立的 arq worker 进程执行。前端拿到 `task_uuid` 后，
+    按 `poll_interval_ms` 轮询 `GET /api/generation/{task_uuid}`：
+    用响应里的 `stage_text` / `progress` 显示进度，`status` 变成
+    `success` / `failed` 时停止轮询。
+
+    ⚠️ 为什么改成异步：实测复杂需求单次生成已 157 秒；后续叠加意图识别 / 文档解析 /
+    规划 / 多轮工具调用会到 3~5 分钟，同步等待必然前端超时。
 
     Args:
         req: 生成请求（需求 + 类型）。
@@ -41,9 +52,12 @@ def create_generation(
         db: 数据库会话。
 
     Returns:
-        生成任务详情（含文件名清单与预览地址）。
+        202：任务标识、初始阶段、轮询地址与建议轮询间隔。
+
+    Raises:
+        HTTPException: 生成类型未实现 → 501；任务队列（Redis）不可用 → 503。
     """
-    return GenerationService.create(db, current_user.id, req)
+    return await GenerationService.create(db, current_user.id, req)
 
 
 # ⚠️ /list 必须声明在 /{task_uuid} 之前：
@@ -124,7 +138,10 @@ def get_generation(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_mysql_db),
 ) -> GenerationTaskResponse:
-    """查询单个生成任务详情（只能查自己的）。
+    """查询单个生成任务详情（只能查自己的），同时充当**进度轮询接口**。
+
+    因为生成已改为异步（202 + 队列），前端提交后靠本接口轮询：
+    看 `stage` / `stage_text` / `progress` 显示进度，看 `status` 判断是否结束。
 
     Args:
         task_uuid: 任务唯一标识。
@@ -135,4 +152,3 @@ def get_generation(
         任务详情。
     """
     return GenerationService.get_task(db, current_user.id, task_uuid)
-

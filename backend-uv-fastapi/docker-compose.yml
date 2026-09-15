@@ -1,0 +1,56 @@
+# docker-compose.yml —— 开发期依赖的中间件（Redis 队列 + PostgreSQL 向量库）
+#
+# 启动：docker compose up -d
+# 状态：docker compose ps
+# 停止：docker compose down        （数据保留在具名卷里）
+# 清库：docker compose down -v     （连数据卷一起删，慎用）
+#
+# 阶段 0 只用到 redis；pg 是给阶段 1（对话 / 知识库持久化）预留的，
+# 一并定义好，阶段 1 就不用再动这个文件。
+#
+# ⚠️ 密码走环境变量：会优先读同目录下的 .env（backend-uv-fastapi/.env），
+#    没有才用这里的本地开发默认值 —— 不要把真实密码写进本文件（AGENTS.md §5）。
+
+services:
+  # ===== 任务队列：Agent 流水线的排队与分发（阶段 0 起使用）=====
+  redis:
+    image: redis:7-alpine
+    container_name: wgp-redis
+    ports:
+      - "6379:6379"
+    # 打开 AOF 持久化：Redis 不是业务数据的真源（真源在 MySQL），
+    # 但队列内容持久化能减少"重启丢排队任务"的概率
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===== 对话 / 知识库 / 向量检索（阶段 1 起使用）=====
+  # 用 pgvector 官方镜像：本机装的 PostgreSQL 18 **没有** pgvector 扩展，
+  # 而这个镜像自带，省掉 Windows 上自己编译扩展的麻烦。
+  # 若 pg18 这个 tag 在镜像仓库里还没出，改成 pg16 / pg17 即可（阶段 1 才真正用到）。
+  # docker-compose.yml 修改后的 pg 服务部分
+  pg:
+    image: pgvector/pgvector:pg18
+    container_name: wgp-pg
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wgp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wgp_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-wgp_agent}
+    volumes:
+      - pg-data:/var/lib/postgresql   # 关键修改：去掉 /data 后缀
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wgp} -d ${POSTGRES_DB:-wgp_agent}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis-data:
+  pg-data:

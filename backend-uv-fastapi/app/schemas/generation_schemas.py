@@ -31,6 +31,12 @@ class GenerationTaskResponse(BaseModel):
     gen_type: str = Field(description="生成类型：single/multi")
     status: str = Field(description="状态：running/success/failed")
 
+    # ===== Agent 流水线阶段（与 status 正交，取值见 app/agents/stages.py）=====
+    stage: str = Field(default="queued", description="Agent流水线阶段")
+    stage_text: str = Field(default="", description="阶段中文文案（业务层填充，前端直接展示）")
+    stage_detail: str | None = Field(default=None, description="阶段明细文案")
+    progress: int = Field(default=0, description="进度百分比 0-100")
+
     result_dir: str | None = Field(default=None, description="产物相对目录")
     file_list: list[str] = Field(default_factory=list, description="产物文件名列表")
     preview_url: str | None = Field(default=None, description="网页预览地址（由业务层填充）")
@@ -61,6 +67,18 @@ class GenerationTaskResponse(BaseModel):
                 return []
             return data if isinstance(data, list) else []
         return value
+
+
+class GenerateAcceptedResponse(BaseModel):
+    """提交生成后的即时响应（异步执行，不再同步等结果回来）。"""
+
+    task_uuid: str = Field(description="任务唯一标识")
+    status: str = Field(description="状态：running/success/failed")
+    stage: str = Field(description="当前阶段")
+    stage_text: str = Field(description="阶段中文文案")
+    progress: int = Field(description="进度百分比 0-100")
+    poll_url: str = Field(description="轮询进度的地址（前端直接 GET 它）")
+    poll_interval_ms: int = Field(description="建议轮询间隔（毫秒）")
 
 
 class GenerationListResponse(BaseModel):

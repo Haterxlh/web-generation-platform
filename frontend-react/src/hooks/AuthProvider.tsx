@@ -15,16 +15,17 @@ import { clearToken, getToken, setToken } from '@/utils/token'
 /** 登录状态提供者：包在 <App /> 外层使用 */
 export default function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
-  // 初始为 true：表示"正在尝试用本地 token 恢复登录态"
-  const [initializing, setInitializing] = useState(true)
+  // 初始值直接由"本地有没有 token"推导，而不是一律先置 true：
+  // 没有 token 时根本不需要恢复登录态，也就没必要先 true 再在 effect 里同步改回 false
+  // —— 那次同步 setState 既多余、又会触发一次级联渲染（react-hooks/set-state-in-effect），
+  //    而且会让未登录用户在第一帧看到"正在恢复登录态"的闪烁。
+  const [initializing, setInitializing] = useState(() => getToken() !== null)
 
   // ① 刷新页面后，凭 localStorage 里的 token 把用户信息换回来
   useEffect(() => {
-    // 没有 token 说明从未登录或已登出，直接结束初始化，不必打扰后端
-    if (getToken() === null) {
-      setInitializing(false)
-      return
-    }
+    // 没有 token 说明从未登录或已登出：initializing 的 useState 初值已经是 false，
+    // 这里直接结束即可 —— 既不必打扰后端，也不需要在 effect 体内 setState
+    if (getToken() === null) return
 
     // cancelled：组件卸载（含 StrictMode 开发期二次挂载）后不再 setState
     // 用于标记当前组件是否已经被卸载了，如果当前组件已卸载，这个时候getCurrentUser()的异步信息返回了

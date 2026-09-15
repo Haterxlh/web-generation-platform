@@ -355,6 +355,58 @@ body {
   color: var(--color-text-muted);
 }
 
+/* ===== 异步生成的进度区（阶段文案 + 进度条 + 已等待秒数）===== */
+.gen-progress {
+  margin-top: 20px;
+  padding: 16px 20px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.gen-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.gen-progress-stage {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.gen-progress-elapsed {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.gen-progress-track {
+  height: 6px;
+  overflow: hidden;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+}
+
+.gen-progress-fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.gen-progress-detail {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-muted);
+  word-break: break-all;
+}
+
 .gen-result {
   margin-top: 24px;
   padding: 20px;

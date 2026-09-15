@@ -43,6 +43,23 @@ class GenerationTask(MysqlBase):
         "status", String(16), server_default=text("'running'"), comment="状态:running/success/failed"
     )
 
+    # ===== Agent 流水线阶段（与 status 正交，取值见 app/agents/stages.py）=====
+    # 为什么不并进 status：status 是"活着还是结束了"，stage 是"走到哪一步了"。
+    # 合成一个字段必然出现"success 但 stage 卡在 generating"这类自相矛盾的状态。
+    stage: Mapped[str] = mapped_column(
+        "stage", String(16), server_default=text("'queued'"), comment="Agent阶段"
+    )
+
+    # 阶段明细：给用户看的一句话进展（如"正在生成 index.html"），可为空
+    stage_detail: Mapped[str | None] = mapped_column(
+        "stageDetail", String(255), comment="阶段明细文案(给用户看)"
+    )
+
+    # 进度百分比 0~100。失败时**保留**失败时的值，不归零（见 service._set_stage）
+    progress: Mapped[int] = mapped_column(
+        "progress", SmallInteger, server_default=text("0"), comment="进度百分比0-100"
+    )
+
     # 产物目录：存"相对路径"，不存绝对路径（换存储位置时数据不失效）
     result_dir: Mapped[str | None] = mapped_column(
         "resultDir", String(512), comment="产物相对目录"
@@ -71,7 +88,7 @@ class GenerationTask(MysqlBase):
         "updateTime",
         DateTime,
         server_default=text("CURRENT_TIMESTAMP"),
-        server_onupdate=text("CURRENT_TIMESTAMP"),
+        # server_onupdate=text("CURRENT_TIMESTAMP"), # 本表 DDL 里 updateTime 只有 DEFAULT CURRENT_TIMESTAMP，没有 ON UPDATE 子句。
         comment="更新时间",
     )
 

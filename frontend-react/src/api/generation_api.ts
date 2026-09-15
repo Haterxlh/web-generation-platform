@@ -4,6 +4,7 @@
  */
 import { request } from './http'
 import type {
+  GenerateAccepted,
   GenerateRequest,
   GenerationListResponse,
   GenerationTask,
@@ -14,10 +15,13 @@ import type {
 const GENERATION_PREFIX = '/api/generation'
 
 /**
- * POST /api/generation/create：创建并执行一次生成。
- * ⚠️ 后端是同步执行，通常 30~120 秒才返回，调用方必须做"生成中"的界面状态。
+ * POST /api/generation/create：提交一次生成。
+ * ⚠️ 后端是**异步执行**（202 Accepted）：本接口立即返回"已受理"，
+ * 真正的生成由独立的 arq worker 进程完成。
+ * 调用方必须拿 `task_uuid` 去轮询 `getGeneration()`，
+ * 直到 `status` 不再是 'running'（用 `stage_text` / `progress` 显示进度）。
  */
-export function createGeneration(req: GenerateRequest): Promise<GenerationTask> {
+export function createGeneration(req: GenerateRequest): Promise<GenerateAccepted> {
   return request(`${GENERATION_PREFIX}/create`, { method: 'POST', body: req })
 }
 

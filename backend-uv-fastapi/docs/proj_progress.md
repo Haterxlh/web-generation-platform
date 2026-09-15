@@ -1,7 +1,7 @@
 # 项目进度 —— backend-uv-fastapi
 
 > 本文件用于跨会话同步开发进度。每次总结进度时按此格式更新。
-> 最近更新时间：2026-09-14
+> 最近更新时间：2026-09-15
 
 ## 1. 模块进度
 
@@ -88,7 +88,7 @@
 - **功能范围**：一句话需求 → 生成可直接打开的网页（单 HTML 文件 / html+css+js 三文件），落盘 + 落库 + 带鉴权的预览
 - **已交付内容**：
   - 接口：
-    - `POST /api/generation/create` —— 创建并执行生成（同步返回）
+    - `POST /api/generation/create` —— 提交生成（**202 异步，立即返回**；阶段 0 起改为入队，由 worker 执行）
     - `GET /api/generation/list` —— 我的生成历史（分页）
     - `GET /api/generation/{task_uuid}` —— 任务详情
     - `POST /api/generation/{task_uuid}/preview-ticket` —— 签发预览票据（写 HttpOnly Cookie）
@@ -143,8 +143,70 @@
   - 本次给 `generation_task` 加 token 三列是**手写 ALTER TABLE**（`create_all` 不能改已存在的表）
   - **`DEEPSEEK_REASONING_EFFORT` 疑似被静默忽略**：`low` 档实测仍产出 28984 个思考 token（与设计约定 §7.2 的 temperature 静默失效同款），待专门验证
   - **`LLM_MAX_TOKENS` 实际为 `.env` 中的 345600**（本文档此前记为 32768，已过期；`.env` 不入库，换机器要重新确认）
-  - 数据库遗留：1 条历史僵尸 `running` 记录；2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
+  - 数据库遗留：**1 条历史僵尸 `running` 记录已于 2026-09-15 被 worker 的僵尸回收清理**（见 Agent 框架模块）；
+    2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
+
+### 模块：Agent 框架（阶段 0：异步任务骨架）
+- **状态**：进行中（阶段 0 已完成；阶段 1~8 的方案见 `docs/agent_refactor_plan.md`）
+- **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
+  并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示
+- **已交付内容**：
+  - 接口变更：
+    - `POST /api/generation/create` —— 同步 → **202 + 已受理**（返回 `poll_url` / `poll_interval_ms`）
+    - `GET /api/generation/{task_uuid}` —— 兼作**进度轮询接口**（新增 `stage` / `stage_text` / `stage_detail` / `progress`）
+  - 核心文件：
+    - `app/core/agent_config.py`（并发 / 超时 / 重试 / 僵尸宽限 / 轮询间隔）
+    - `app/core/redis_config.py`（→ arq `RedisSettings`）、`app/core/arq_pool.py`（连接池 + 任务名常量）
+    - `app/core/worker.py`（`WorkerSettings` + `run_generation` job + 启动时僵尸回收）
+    - `app/agents/stages.py`（`AgentStage` 枚举 + 中文文案 + 进度映射）
+    - `app/models/generation_task.py`（+`stage` / `stageDetail` / `progress` 三列）
+    - `app/repositories/generation_repository.py`（+`list_stale_running`）
+    - `app/services/generation_service.py`（`create` 改入队；+`execute_pipeline` / `recover_zombies` / `_set_stage` / `_fail`）
+    - `app/api/generation.py`、`app/main.py`（`lifespan` 管理 arq 池）
+    - `docker-compose.yml`（redis + pgvector/pg18）、`sql/scripts/alter_generation_task_stage.sql`
+    - `tests/test_task_pipeline.py`、`app/utils/utils_check/check_arq.py`、`check_http_e2e.py`
+  - 前端：`src/types/generation_types.ts`（+`AgentStage` / `GenerateAccepted`）、`src/api/generation_api.ts`、
+    `src/pages/Generate/GeneratePage.tsx`（改为轮询 + 进度条 + 已等待计时）、`src/styles/global.css`
+- **关键决策**：
+  - **Redis 只做队列，不是真源**：任务状态 / 阶段 / 进度 / 结果一律落 MySQL（`keep_result=0`）
+  - **arq `max_tries=1`**：arq 默认 5 且采用悲观执行（worker 中途关闭会重跑）；LLM 按 token 计费，
+    自动重试等于重复烧钱 → 宁可标 `failed` 让用户手动重试
+  - **`status` 与 `stage` 正交**：前者是生命周期，后者是进度；合并会出现"success 但 stage 卡在 generating"
+  - **`_set_stage` 必须显式写 `updateTime`**：本表 DDL 的 `updateTime` **没有 `ON UPDATE` 子句**
+    （`server_onupdate` 不会出现在 UPDATE 语句里），而僵尸回收靠它判断陈旧 —— 这个字段同时是"最后心跳"
+  - **失败时保留 progress**，不归零（知道"死在 70%"比归零更有排查价值）
+  - 队列里**只传 `task_uuid`**（arq 默认 pickle 序列化，传字符串最小且安全），参数由 worker 回库读
+  - 开发期 API 与 worker 是**两个进程**：`uv run fastapi dev` + `arq app.core.worker.WorkerSettings`
+  - 注：`app/core/arq_pool.py` 用 `init_pool()` 而非 `get_pool()` 作为唯一入口 —— 它幂等可重试，
+    Redis 恢复后能自愈；`app/main.py` 的 lifespan 刻意**不让 Redis 故障导致应用起不来**
+- **验证情况**：
+  - `pytest`：**23 个用例全绿**（新增 `test_task_pipeline.py`，全程离线，不连 Redis / MySQL / 模型）
+  - **HTTP 端到端（真实 LLM）**：提交 202 仅 **0.09 秒**（原同步 30~157 秒）；1.6s 观测到 `generating 70%`，
+    28.8s 到 `success/done 100%`；产物 `['index.html']`、`preview_url` 与 token 用量均正确
+  - **僵尸回收（真实数据）**：历史僵尸 id=5 被 worker 启动时回收，`updateTime` 刷新、`error_msg` 写入
+  - `check_arq`：Redis 连通 / 成本护栏配置 / 入队与 `_job_id` 去重 三项全通过
+  - `npm run typecheck` 通过
+- **本轮修复（2026-09-15）**：
+  1. **`docker-compose.yml` 的 PG 数据卷路径**（用户实测发现并修正）：
+     PG 18+ 镜像期望挂载整个 `/var/lib/postgresql`，并在其下自建 `18/docker` 子目录存放数据；
+     原先沿用的 `/var/lib/postgresql/data` 会让容器启动时检测到目录结构不对而**直接崩溃退出**。
+  2. **前端 2 个既有 lint 报错**（规则 `react-hooks/set-state-in-effect`）：
+     - `hooks/AuthProvider.tsx`：`initializing` 改为由"本地有无 token"惰性初始化
+       （`useState(() => getToken() !== null)`），删掉 effect 里那次多余的同步 `setInitializing(false)`
+       —— 顺带消除了未登录用户第一帧的"正在恢复登录态"闪烁。
+     - `pages/Projects/ProjectsPage.tsx`：首屏加载不再复用带 `setLoading(true)` 的 `load()`，
+       改为把 `setState` 全部放进 Promise 回调（该规则只认可这种形态），
+       并加 `cancelled` 兜住"组件卸载后请求才返回"的竞态。
+  3. 修复后 `eslint` / `tsc -b` / `npm run build`（39 modules，886ms）全部通过。
+  4. 阶段 1 依赖就绪：`psycopg[binary]`、`alembic` 已 `uv add` 写入 `pyproject.toml` / `uv.lock`。
+- **待办与遗留**：
+  - ✅ **`npm run lint` / `tsc -b` / `npm run build` 已于 2026-09-15 全部通过**；此前 2 个 `react-hooks/set-state-in-effect` 报错（位于
+    `hooks/AuthProvider.tsx` 与 `pages/Projects/ProjectsPage.tsx`）已修复，详见上方"本轮修复（2026-09-15）"
+  - 阶段 0 验证在库里留下 1 个临时账号 `e2e9754b32245` 与 1 条任务（如需清理请手动处理）
+  - 进度只到"阶段级"，尚无 SSE 实时推送（当前靠前端轮询，间隔 1500ms）
+  - 产物落本地磁盘 + worker 独立进程 = **单机假设**；将来 worker 与 API 分机器部署必须换对象存储
+  - API 与 worker 需**分别启动**，目前仅靠 `USEFUL_COMMAND.md` 说明，未做进程守护 / 一键脚本
 
 ## 2. 项目级约定（跨模块通用）
 - 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
@@ -157,7 +219,9 @@
 - `app/utils/` 按用途分子包（`db` / `jwt` / `weg_gen` / `utils_check`），不再平铺新文件
 
 ## 3. 下一步计划（按优先级）
-- [ ] 生成进度体验：后端**流式输出（SSE）**接口 + `graph.astream(stream_mode="updates")`；前端先加"已等待 N 秒"计时器（归属：生成模块 / frontend-react）
+- [ ] **Agent 框架阶段 1**：双数据源基座（PG + pgvector 镜像、`PgBase` / `get_pg_db`、`app/models/agent/`）
+      与 Harness 基座（`file_store.py` + `web/tools.py`、`AgentTrace` / `StageBudget`）（归属：Agent 框架）
+- [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
 - [ ] 可选：多文件"定向补缺"重试；失败原文落盘时附带元信息头（finish_reason / usage / errors）（归属：生成模块）
@@ -167,6 +231,14 @@
 ### 变更记录
 - **2026-09-12（commit `2158079`）**：生成模块全套（`agents/`、`api/generation.py`、`models/generation_task.py`、`schemas/`、`services/`、`repositories/`、`prompts/`、`utils/weg_gen/`）+ 大模型接入（`core/llm_client.py`）+ 配置基类（`core/settings_base.py`）+ 存储配置 + 预览鉴权；`app/utils/` 拆为用途子包；`frontend-react/vite.config.ts` 新增 `/preview` 代理
 - **2026-09-14**：前端对接生成模块（见 `frontend-react/docs/proj_progress.md`）；修复 `create` 缺少落库与返回导致的 500；**多文件改用非思考客户端**并强化输出契约；失败任务落盘模型原文；补充 6 个离线 pytest 用例
+- **2026-09-15**：**Agent 框架阶段 0（异步任务骨架）**——`POST /api/generation/create` 改为 202 入队即返回；
+  新增 Redis + arq 独立 worker 进程（`core/worker.py`）、`AgentStage` 阶段枚举与 `generation_task` 三列、
+  worker 启动僵尸回收、前端改轮询 + 进度条；新增 23 个离线用例、`check_arq` 与 `check_http_e2e` 自检脚本、
+  `docker-compose.yml`（redis + pgvector）；**Agent 框架重构总方案落盘 `docs/agent_refactor_plan.md`（v2）**
+- **2026-09-15（补）**：阶段 1 前置条件就绪 —— Docker 起 `pgvector/pgvector:pg18`（容器 `wgp-pg`，`pg_isready` 通过）、
+  `uv add "psycopg[binary]" alembic`；修正 `docker-compose.yml` 的 PG 18 数据卷路径
+  （`/var/lib/postgresql/data` → `/var/lib/postgresql`，否则容器启动即崩）；
+  修复前端 2 个既有 lint 报错（`react-hooks/set-state-in-effect`），`lint` / `tsc` / `build` 全通过
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）
