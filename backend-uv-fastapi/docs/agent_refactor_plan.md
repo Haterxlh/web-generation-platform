@@ -710,7 +710,7 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
     —— 冒烟测试第一轮就抓到（`IndexError`），随后补上测试。
 
 ### 阶段 3｜文档解析
-- **产出**：`app/utils/doc/pdf_parser.py`、`html_parser.py`（**无 LLM**）、
+- **产出**：`app/utils/doc/pdf_parser.py`、`html_parser.py`、`text_parser.py`（**无 LLM**）、
   `app/agents/source/doc_digest_agent.py`、`POST /api/agent/source/upload`、
   `app/services/source_service.py`、上传目录 `uploads/{user_id}/`
   - 同时实现（但到阶段 6 才入图）：`app/agents/merge/requirement_merge.py` ——
@@ -723,8 +723,29 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   - 大文档走 **map-reduce**（分块摘要 → 归并），每块固定 token 预算
   - 附件角色显式标注：`content` | `style` | `both`
   - **多附件归并成一份 digest**，不是各生成一份（否则 web-agent 收到互相冲突的需求）
+  - **支持的上传类型（2026-09-15 增补）**：`.pdf` / `.html` / `.htm` / `.txt` / `.md`
+    - `.txt` / `.md` 的用意是让用户能**把需求直接写在文件里**上传，省去在输入框里粘贴长文；
+    - ⚠️ **编码回退必须做**：中文 Windows 记事本默认存 GBK/GB18030，按 UTF-8 硬读会
+      `UnicodeDecodeError`，用 `errors="ignore"` 则整篇变乱码。顺序：UTF-8 → GB18030 → 明确报错；
+    - `.md` **保留 Markdown 结构**（标题 / 表格 / 代码块）直接给模型 —— 结构本身就是信息，不要预先压平。
+  - ⚠️ **只有 HTML 能当风格源**（由"解析器的能力"决定，不由模型猜）：
+    - `.html` / `.htm` → 可 `content` / `style` / `both`（我们抽得出设计令牌）；
+    - `.pdf` / `.txt` / `.md` → **只能 `content`**（`pypdf` 只出文本，抽不出配色 / 字体 / 圆角）；
+    - 模型若把 `.md` 判成风格源，由 **Python 侧强制改回 `content`**
+      —— 沿用"判定权归模型、否决权归 Python"的既有原则。
+  - **`.md` / `.txt` 常常本身就是"需求说明书"，而不是"待展示的素材"**：
+    digest 提示词要能区分两者 —— 若文件读起来是对网页的**要求**
+    （"要有登录""必须响应式"），应提取进 `constraints` 等需求性字段，
+    而不是塞进 `content_points`（那会让 web-agent 把要求当成页面文案）。
+  - **分块策略按类型区分**：`.txt` / `.md` 一般很小，**单次摘要即可**；
+    只有 PDF 与超长 HTML 才需要 map-reduce 分块（省一次归并调用）。
+  - **上传文件仍需配一句话**（2026-09-15 决策）：**不允许**"只传文件、一句话不说"。
+    `AgentChatRequest.message` 保持 `min_length=1`（后端不改），前端也要在输入框为空时禁用提交
+    —— 哪怕已经选了附件。理由：这一句话既让 router 能判断意图，
+    也能在"文件内容与用户本意不符"时留下兜底线索（纯靠文件猜意图风险太大）。
   - 上传即分配 `@docN`
-- **验收**：真实 PDF / HTML 各一份跑通；扫描版报错可复现；设计令牌人工核对；多附件归并正确
+- **验收**：真实 PDF / HTML / `.md` / **GBK 编码的 `.txt`** 各一份跑通；扫描版 PDF 报错可复现；
+  设计令牌人工核对；**把 `.md` 误判成风格源时被 Python 改回 `content`**；多附件归并正确
 
 ### 阶段 4｜个人 RAG **占位**（不是实现）
 - **产出**：`agents/rag/need_rag.py`（**真实现**）、`agents/rag/retriever.py`（接口 + 桩 provider）
@@ -827,6 +848,11 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
     都会让**所有 alembic 命令**在启动前就 `UnicodeDecodeError` 挂掉。
     注意 `-X utf8` / `PYTHONUTF8=1` **救不了**：`locale.getencoding()` 不受 UTF-8 模式影响。
     中文理由放在 `app/alembic/env.py`（.py 永远是 UTF-8）与本文件里。
+21. ⚠️ **`.txt` 的编码不能假定是 UTF-8** —— 中文 Windows 记事本默认存 GBK/GB18030，
+    按 UTF-8 硬读会抛 `UnicodeDecodeError`；而用 `errors="ignore"` 更糟：整篇变乱码、
+    还"成功"解析出一份垃圾 digest。必须按 **UTF-8 → GB18030 → 明确报错** 的顺序回退
+    （GB18030 是 GBK 的超集，覆盖绝大多数简体中文遗留文件），
+    都失败才报错 —— 绝不静默产出空需求。
 
 ---
 

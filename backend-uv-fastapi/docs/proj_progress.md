@@ -267,10 +267,12 @@
 
 ## 3. 下一步计划（按优先级）
 - [x] **Agent 框架阶段 2**（已完成 2026-09-15，见上方模块进度）
-- [ ] **Agent 框架阶段 3**：文档解析 —— `utils/doc/pdf_parser.py` / `html_parser.py`（**无 LLM**）、
-      `digest-agent`（**仅文件** → `RequirementDigest`，含 content/style/both 判定）、
-      `merge`（对话摘要 + 四来源冲突消解 → `FinalRequirement`）、`POST /api/agent/source/upload`
-      （阶段 3 实现、阶段 6 入图）（归属：Agent 框架）
+- [ ] **Agent 框架阶段 3**：文档解析 —— `utils/doc/` 的 `pdf_parser.py` / `html_parser.py` / `text_parser.py`
+      （**无 LLM**；支持 `.pdf` / `.html` / `.htm` / `.txt` / `.md`，`.txt` 需 UTF-8→GB18030 编码回退）、
+      `digest-agent`（**仅文件** → `RequirementDigest`，含 content/style/both 判定，
+      **但只有 HTML 能当风格源**，其余类型由 Python 强制为 content；
+      上传文件仍须配一句话，`message` 保持必填）、`merge`（对话摘要 + 四来源冲突消解 → `FinalRequirement`）、
+      `POST /api/agent/source/upload`（阶段 3 实现、阶段 6 入图）（归属：Agent 框架）
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
