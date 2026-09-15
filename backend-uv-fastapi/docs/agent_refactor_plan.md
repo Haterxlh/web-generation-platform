@@ -393,7 +393,7 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
   - **前端全链路**：提交 → 轮询看到阶段推进 → 成功可预览 / 失败有提示
   - `pytest` 全绿
 
-### 阶段 1｜双数据源基座 + Harness 基座
+### 阶段 1｜双数据源基座 + Harness 基座 —— ✅ 已完成（2026-09-15）
 - **产出**：
   - `app/core/pg_config.py`、`app/core/pg_db.py`（`pg_engine` / `PgSessionLocal` / `PgBase` / `get_pg_db()`）
   - `app/models/agent/`（`agent_session` / `agent_message` / `generation_source`）
@@ -414,6 +414,19 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
   - **"故意在错库查表"用例**：用 MySQL session 查 `agent_session` 必须报错（证明没串库）
   - 并发隔离：两个独立 tools 实例往各自 store 写同名文件，内容互不串
   - 非法文件名（`../x`、`a/b.css`）返回错误字符串而不是抛异常
+- **实际交付与偏差（2026-09-15）**：
+  - 交付：`app/core/pg_config.py`、`app/core/pg_db.py`、`app/models/agent/`（三表）、
+    `alembic.ini` + `app/alembic/`（首个迁移 `4e97ff4fef89`，含 `CREATE EXTENSION vector`）、
+    `app/utils/weg_gen/file_store.py`、`app/agents/web/tools.py`、
+    `app/agents/common.py`（+`AgentTrace` / `ToolCallRecord`）、
+    `app/utils/utils_check/check_pg.py`、`tests/test_web_tools.py`、`tests/test_pg_metadata_isolation.py`
+  - **偏差 1：`StageBudget` 未产出，推迟到阶段 5** —— 它的唯一消费者是"难度分级 → 步数/预算映射"，
+    阶段 1 产出它就是无人使用的代码。
+  - **偏差 2：`app/repositories/agent/` 未产出，推迟到阶段 2** —— 阶段 2 的 chat 会话是它的第一个消费者。
+  - **偏差 3：`file_writer._safe_name` 改名为公开的 `safe_name`** —— 工具集与虚拟文件系统都要复用它，
+    继续用 `_` 前缀就得跨模块 import 私有名。
+  - 应用户决策，PG 侧列名统一 `snake_case`；时间列用 `timestamptz`（避免 naive 时间被按会话时区解释）；
+    `is_delete` 沿用 0/1 与 MySQL 保持一致，让两库查询写法统一。
 
 ### 阶段 2｜意图路由 + chat-agent + 对话持久化 + 别名机制
 - **产出**：`agents/router/intent_router.py`、`agents/chat/chat_agent.py`、
@@ -544,6 +557,11 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
     PG 18 起镜像期望挂载整个 `/var/lib/postgresql`，并在其下自建 `18/docker` 子目录存放数据；
     若沿用旧版的 `/var/lib/postgresql/data`，容器启动时会检测到目录结构不对而**直接崩溃退出**
     （2026-09-15 实测踩到并已修正，见 `docker-compose.yml`）。
+20. ⚠️ **`alembic.ini` 必须保持纯 ASCII（注释用英文）** —— Alembic 用 `encoding="locale"` 读它
+    （见 `alembic/util/compat.py`）。中文 Windows 的 locale 是 GBK，文件里任何一个 UTF-8 非 ASCII 字节
+    都会让**所有 alembic 命令**在启动前就 `UnicodeDecodeError` 挂掉。
+    注意 `-X utf8` / `PYTHONUTF8=1` **救不了**：`locale.getencoding()` 不受 UTF-8 模式影响。
+    中文理由放在 `app/alembic/env.py`（.py 永远是 UTF-8）与本文件里。
 
 ---
 
@@ -556,6 +574,8 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
 | 2026-09-15 | arq 取消重跑探针（**源码判定**） | `max_tries=1` 的 worker 被中途关闭 | `arq/worker.py:549-550` 在**调用函数体之前**判定 `job_try > max_tries`（函数体直到 L595 才被 create_task）；被取消的任务以 `job_try=2` 重入队后直接判失败（`max 1 retries exceeded`），模型不会被二次调用 | **`max_tries=1` 确实能防止重复烧 token**；但被杀死那一次的产物不会落库，DB 里仍是 `running` → **僵尸回收依然必需** |
 | 2026-09-15 | 阶段 0：异步骨架 HTTP 端到端（真实 LLM） | 注册 → 登录 → create → 轮询 → 终态 | 提交 **202 仅 0.09 秒**（原同步 30~157 秒）；1.6s 观测到 `generating 70%`，28.8s 到 `success/done 100%`；产物 `['index.html']`、`preview_url` 正确、token 用量落库 | **通过** |
 | 2026-09-15 | 阶段 0：僵尸回收（真实数据） | worker 启动 | 历史僵尸记录 id=5（createTime 2026-09-14 18:30）被回收：`updateTime` 刷新为 2026-09-15 14:45:47，`errorMsg` 写入"任务超时或执行进程中断，已自动标记为失败" | **通过** |
+| 2026-09-15 | 阶段 1：跨库隔离（**实库验收**） | MySQL 会话查 `agent_session` / PG 会话查 `generation_task` | 两者均按预期报 `ProgrammingError`；而 PG 查自己的 `generation_source` **正常可查** | **通过** —— 后者排除了"表不存在"造成的假阳性，证明运行时确实没串库 |
+| 2026-09-15 | 阶段 1：`write_file` 的自由对象参数能否被 DeepSeek 接受（真实调用） | `bind_tools` + "请交付一个只有 index.html 的最小页面" | `finish_reason=tool_calls`，返回 `write_file({"files": {"index.html": "<!DOCTYPE html>…"}})`，仅 337 output tokens | **通过** —— `dict[str, str]` 这个最不确定的假设成立，`tools.py` 的主要风险排除 |
 | ✅ | 阶段 0：异步骨架 —— **已完成（2026-09-15）**，见上方两条实测记录 | — | — | — |
 | | 阶段 2：意图路由正确率（三类输入） | | | |
 | | 阶段 3：PDF / HTML 解析质量 | | | |

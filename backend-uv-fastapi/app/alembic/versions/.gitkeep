@@ -1,0 +1,3 @@
+# 迁移脚本目录占位文件。
+# Alembic 要求 script_location 下存在 versions/ 目录；
+# git 不跟踪空目录，所以放这个文件把它保留下来。

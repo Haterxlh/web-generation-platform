@@ -13,6 +13,12 @@ from app.core.mysql_db import MysqlBase, mysql_engine
 import app.models.user  # noqa: F401  （noqa 表示"这行暂时没用变量，别报警告"）
 import app.models.generation_task  # noqa: F401  ← 新增：注册生成任务模型
 
+# ⚠️ 绝对不要在这里 import app.models.agent.*
+# 那些模型继承的是 PgBase（PostgreSQL 侧），一旦被 import 进来，
+# 下面的 create_all 会**把对话/知识库表建到 MySQL 里，而且不报错**。
+# PG 侧的表由 Alembic 管理：`uv run alembic upgrade head`。
+# 详见 docs/agent_refactor_plan.md §5 硬约束 1。
+
 # 创建所有"数据库中还不存在"的表（已存在的表不会动，可安全重复运行）
 MysqlBase.metadata.create_all(bind=mysql_engine)
 print('建表完成')

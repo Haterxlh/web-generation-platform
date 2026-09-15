@@ -87,3 +87,28 @@ arq --check app.core.worker.WorkerSettings
 
 > 输出类似：`j_complete=0 j_failed=0 j_retried=0 j_ongoing=0 queued=0`
 > 查不到该 key 时命令以退出码 1 结束，说明当前没有 worker 在运行。
+
+### 5. PostgreSQL（对话 / 知识库，阶段 1 起）
+
+5.1 执行迁移（建三张表 + 装 `vector` 扩展）
+
+```shell
+cd ./backend-uv-fastapi
+uv run alembic upgrade head
+uv run alembic current
+```
+
+> ⚠️ `alembic.ini` **必须保持纯 ASCII**（注释用英文）。
+> Alembic 用系统 locale 编码读这个文件，中文 Windows 下是 GBK；
+> 一旦里面出现 UTF-8 中文注释，**所有 alembic 命令**都会在启动前 `UnicodeDecodeError` 崩掉。
+> 中文说明放在 `app/alembic/env.py` 与 `docs/agent_refactor_plan.md`。
+
+5.2 双数据源自检（含"跨库查询必须失败"验收）
+
+```shell
+cd ./backend-uv-fastapi
+uv run python -m app.utils.utils_check.check_pg
+```
+
+> 检查四项：PG 连通与迁移状态 / MySQL 既有链路未受影响 /
+> 两个 declarative Base 静态隔离 / **拿错库的会话查表必须报错**。

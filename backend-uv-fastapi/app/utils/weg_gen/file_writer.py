@@ -10,12 +10,16 @@ from app.core.storage_config import storage_settings
 # 这一条正则就把 ../、绝对路径、C:\、子目录 全部从根上堵死
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
 
+# safe_name 现在是对外公开的（原为 _safe_name）：Agent 工具集
+# （app/agents/web/tools.py）与虚拟文件系统（file_store.py）也复用它。
+# 刻意不另写一套正则 —— 两处规则一旦漂移，就会出现"工具放行、落盘却拒绝"这类诡异故障。
+
 
 class UnsafeFileNameError(ValueError):
     """文件名不合法（含路径分隔符、..、绝对路径等）。"""
 
 
-def _safe_name(filename: str) -> str:
+def safe_name(filename: str) -> str:
     """校验并返回安全的文件名。
 
     Args:
@@ -43,7 +47,7 @@ def task_dir(user_id: int, task_uuid: str) -> Path:
     Returns:
         目录的 Path 对象（不保证已存在）。
     """
-    return storage_settings.generated_path / str(user_id) / _safe_name(task_uuid)
+    return storage_settings.generated_path / str(user_id) / safe_name(task_uuid)
 
 
 def write_files(user_id: int, task_uuid: str, files: dict[str, str]) -> str:
@@ -65,7 +69,7 @@ def write_files(user_id: int, task_uuid: str, files: dict[str, str]) -> str:
         raise ValueError("files 为空，没有可写入的内容")
 
     # 先把所有文件名校验完再动手写：避免"写到一半撞上非法名字"，留下半成品目录
-    safe_files = {_safe_name(name): content for name, content in files.items()}
+    safe_files = {safe_name(name): content for name, content in files.items()}
 
     directory = task_dir(user_id, task_uuid)
     directory.mkdir(parents=True, exist_ok=True)  # 目录已存在也不报错（重试时复用同一目录）

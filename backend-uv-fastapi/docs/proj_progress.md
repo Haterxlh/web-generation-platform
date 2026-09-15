@@ -147,8 +147,8 @@
     2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
-### 模块：Agent 框架（阶段 0：异步任务骨架）
-- **状态**：进行中（阶段 0 已完成；阶段 1~8 的方案见 `docs/agent_refactor_plan.md`）
+### 模块：Agent 框架（阶段 0 异步骨架 / 阶段 1 双数据源基座）
+- **状态**：进行中（阶段 0、阶段 1 已完成；阶段 2~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
 - **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
   并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示
 - **已交付内容**：
@@ -187,6 +187,12 @@
   - **僵尸回收（真实数据）**：历史僵尸 id=5 被 worker 启动时回收，`updateTime` 刷新、`error_msg` 写入
   - `check_arq`：Redis 连通 / 成本护栏配置 / 入队与 `_job_id` 去重 三项全通过
   - `npm run typecheck` 通过
+  - **阶段 1（2026-09-15）**：`pytest` **65 个用例全绿**（原 23 → 新增 42）；
+    `check_pg` 四项全通过 —— PG 连通与迁移（`vector 0.8.6` 已装、`alembic 4e97ff4fef89`）、
+    MySQL 既有链路未受影响、两个 Base 静态隔离（表集合交集为空）、
+    **跨库查询必须失败**（MySQL 查 `agent_session` 与 PG 查 `generation_task` 均按预期 `ProgrammingError`，
+    而 PG 查自己的表正常 —— 排除"表不存在"的假阳性）；
+    真实模型探针确认 `write_file` 的 `dict[str, str]` schema 被 DeepSeek 接受（`finish_reason=tool_calls`，337 tokens）
 - **本轮修复（2026-09-15）**：
   1. **`docker-compose.yml` 的 PG 数据卷路径**（用户实测发现并修正）：
      PG 18+ 镜像期望挂载整个 `/var/lib/postgresql`，并在其下自建 `18/docker` 子目录存放数据；
@@ -200,6 +206,21 @@
        并加 `cancelled` 兜住"组件卸载后请求才返回"的竞态。
   3. 修复后 `eslint` / `tsc -b` / `npm run build`（39 modules，886ms）全部通过。
   4. 阶段 1 依赖就绪：`psycopg[binary]`、`alembic` 已 `uv add` 写入 `pyproject.toml` / `uv.lock`。
+- **阶段 1 交付（2026-09-15）**：
+  - **双数据源基座**：`app/core/pg_config.py`（用 `URL.create` 拼串，避免密码含 `@` `:` 时被解析错）、
+    `app/core/pg_db.py`（`pg_engine` / `PgSessionLocal` / `PgBase` / `get_pg_db()`，与 `mysql_db.py` 对称）、
+    `app/models/agent/`（`agent_session` / `agent_message` / `generation_source`，PG 侧列名统一 `snake_case`，
+    时间列用 `timestamptz`，`is_delete` 沿用 0/1 与 MySQL 一致）
+  - **PG 迁移**：`alembic.ini` + `app/alembic/`；首个迁移 `4e97ff4fef89` 建三表 + `CREATE EXTENSION vector`，
+    **刻意不建向量表**（BGE-M3 是 1024 维，过早写死维度会让二期换模型时要迁移数据）。
+    MySQL 侧继续用 `create_all`，两套工具的边界已在文档写明
+  - **Harness 基座**：`app/utils/weg_gen/file_store.py`（per-request 虚拟文件系统，含 `missing()` 完成门禁判据）、
+    `app/agents/web/tools.py`（`write_file` / `read_file` / `list_files`，**永不抛异常**、失败原因作为字符串回给模型）、
+    `app/agents/common.py`（+`AgentTrace` / `ToolCallRecord`）；
+    `file_writer._safe_name` 提升为公开的 `safe_name`（工具集复用，避免两套正则漂移）
+  - 自检与测试：`app/utils/utils_check/check_pg.py`、`tests/test_web_tools.py`、
+    `tests/test_pg_metadata_isolation.py`；`app/utils/db/create_all_table.py` 加了"别 import PG 模型"的警告
+  - **刻意推迟**：`StageBudget` → 阶段 5（唯一消费者是难度分级）；`app/repositories/agent/` → 阶段 2（首个消费者是 chat 会话）
 - **待办与遗留**：
   - ✅ **`npm run lint` / `tsc -b` / `npm run build` 已于 2026-09-15 全部通过**；此前 2 个 `react-hooks/set-state-in-effect` 报错（位于
     `hooks/AuthProvider.tsx` 与 `pages/Projects/ProjectsPage.tsx`）已修复，详见上方"本轮修复（2026-09-15）"
@@ -219,8 +240,9 @@
 - `app/utils/` 按用途分子包（`db` / `jwt` / `weg_gen` / `utils_check`），不再平铺新文件
 
 ## 3. 下一步计划（按优先级）
-- [ ] **Agent 框架阶段 1**：双数据源基座（PG + pgvector 镜像、`PgBase` / `get_pg_db`、`app/models/agent/`）
-      与 Harness 基座（`file_store.py` + `web/tools.py`、`AgentTrace` / `StageBudget`）（归属：Agent 框架）
+- [x] **Agent 框架阶段 1**（已完成 2026-09-15，见上方模块进度）
+- [ ] **Agent 框架阶段 2**：意图路由 + chat-agent + 对话持久化 + 别名机制
+      （`intent_router` / `chat_agent`、`utils/agent/alias.py`、`POST /api/agent/chat`、`repositories/agent/`）（归属：Agent 框架）
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
@@ -239,6 +261,13 @@
   `uv add "psycopg[binary]" alembic`；修正 `docker-compose.yml` 的 PG 18 数据卷路径
   （`/var/lib/postgresql/data` → `/var/lib/postgresql`，否则容器启动即崩）；
   修复前端 2 个既有 lint 报错（`react-hooks/set-state-in-effect`），`lint` / `tsc` / `build` 全通过
+- **2026-09-15（Agent 框架阶段 1）**：引入 **PostgreSQL 双数据源基座** —— `app/core/pg_config.py` / `pg_db.py`、
+  `app/models/agent/` 三表（会话 / 消息 / 内容源，PG 侧 `snake_case` + `timestamptz`）、
+  `alembic.ini` + `app/alembic/`（首个迁移 `4e97ff4fef89`，建表 + `CREATE EXTENSION vector`，不建向量表）；
+  **Harness 基座** —— `utils/weg_gen/file_store.py`（per-request 虚拟文件系统）、
+  `agents/web/tools.py`（write/read/list，永不抛异常）、`agents/common.py` 的 `AgentTrace`；
+  新增 `check_pg.py` 与 42 个离线用例（共 65 个）；`file_writer._safe_name` 提升为公开 `safe_name`；
+  踩到并记录两个坑：**PG 18 数据卷路径**、**`alembic.ini` 必须纯 ASCII（locale 编码陷阱）**
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）
