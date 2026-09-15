@@ -938,9 +938,13 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
     `status=success`、阶段 `done`、19.8s、in=13120 out=4917；产物 `['index.html']` 落盘、
     `_debug_trace.jsonl` 落盘；对账行 = 预估 `easy / 1 文件 / 预算 6 步` ↔ 实际 `2 步 / 1 文件 / success`；
     脚本结束清理无残留。中途还顺带验证了阶段 4 的越权防线：探针用 `user_id=0` 时被检索层当场拒绝。
-  - ⚠️ **HTTP 端到端（③）待 worker 重启后补跑**：FastAPI dev 会热重载（`gen_type="agent"` 已被接受），
-    但 **arq worker 不会** —— 旧 worker 上提交 agent 任务会立刻失败（"生成类型 agent 尚未实现"）。
-    重启 `arq app.core.worker.WorkerSettings` 后执行 `check_web_agent` 即可补齐这一段。
+  - ✅ **HTTP 端到端（③）已跑通**（2026-09-15，重启 worker 后）：
+    `create(gen_type=agent)` → 202 / `queued` → 轮询 `retrieving(40%) → planning(55%) → generating(70%) → done(100%)`
+    → `status=success`、19246ms、产物 `['index.html']` →
+    预览 `GET /preview/13/<task_uuid>/index.html` **HTTP 200（10928 字符）** →
+    对账行 预估 `easy / 1 文件 / 预算 6 步` ↔ 实际 `2 步 / 1 文件 / success`。
+    （轮询间隔 2s 时可能漏看只持续约 1 秒的 `routing` 格 —— 轮询粒度的正常现象。）
+    ⚠️ 前提：**arq worker 必须重启**（它不热重载）；否则 agent 任务会立刻失败并报"生成类型 agent 尚未实现"。
   - **已知代价**：agent 模式尚未进前端（阶段 8）；无 checkpoint 断点恢复；
     提示词与预算档位还需阶段 7 的真实数据校正。
 
@@ -1033,7 +1037,8 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
 | 2026-09-15 | 阶段 6：三层自主性 + 客户端对照（真实模型，同一清单 + 故障注入） | "第一次 write_file 必失败" + 待办清单需求 | 思考模式：门禁 ✅、3 步、out 6585、20.0s；非思考：门禁 ✅、4 步、out 7614、22.1s；两者都自主调工具、自主拆解、看懂错误并改正 | **通过** —— 默认客户端定为**思考模式**（数据支持，而非偏好） |
 | 2026-09-15 | 阶段 6：进程内完整流水线（真模型 + 真 MySQL/PG + 真落盘） | 一个待办清单需求，`gen_type=agent` | `success` / `done` / 19.8s / in=13120 out=4917；产物 `['index.html']` 与 `_debug_trace.jsonl` 落盘；对账行 预估 `easy,1 文件,6 步` ↔ 实际 `2 步,1 文件,success`；清理无残留 | **通过** —— "编排 → 落库 → 落盘 → 回填实际值"整条链路可用 |
 | 2026-09-15 | 阶段 6：越权防线（真实链路顺带验证） | 探针用 `user_id=0` | 检索层当场 `ValueError`："检索必须带上有效的 user_id（越权风险）" | **通过** —— 阶段 4 的安全边界在真实链路上确实拦得住 |
-| ✅ | 阶段 6：web-agent + 编排图 + 接线 —— **已完成（2026-09-15）**（HTTP 端到端待 worker 重启后补跑） | — | — | — |
+| 2026-09-15 | 阶段 6：**端到端 HTTP（③）**（真实 API + worker + Redis） | `create(gen_type=agent)` + 待办清单需求 | 202/`queued` → 轮询 `retrieving→planning→generating→done` → `success` 19246ms → 产物 `['index.html']` → 预览 **HTTP 200（10928 字符）** → 对账 预估 `easy,1 文件,6 步` ↔ 实际 `2 步,1 文件,success` | **通过** —— 主流程彻底打通（前提：worker 必须重启，arq 不热重载） |
+| ✅ | 阶段 6：web-agent + 编排图 + 接线 + 端到端 —— **全部完成（2026-09-15）** | — | — | — |
 | ✅ | 阶段 0：异步骨架 —— **已完成（2026-09-15）**，见上方两条实测记录 | — | — | — |
 | | 阶段 6：模型自主性三层验证 | | | |
 | | 阶段 7：新旧实现对照 | | | |

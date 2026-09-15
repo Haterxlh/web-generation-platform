@@ -417,18 +417,18 @@
     - 兜底计划固定为单文件 `index.html`：对"多页面需求但规划失败"的场景只能给出一个页面，
       属于已知取舍（生成链路不阻塞优先于兜底质量）
   - **阶段 6 遗留**：
-    - ⚠️ **`gen_type="agent"` 需要重启 arq worker 才能跑通**：FastAPI dev 会自动热重载，
-      但 **arq worker 不会** —— 旧 worker 上仍是 `_GENERATORS` 老逻辑，
-      提交 agent 任务会立刻失败并报"生成类型 agent 尚未实现"。
-      重启命令：`arq app.core.worker.WorkerSettings`（详见 `USEFUL_COMMAND.md`）
-    - **端到端 HTTP 段（③）因此尚未跑过**：重启 worker 后执行
-      `uv run python -m app.utils.utils_check.check_web_agent` 即可补齐
-      （create(agent) → 轮询阶段 → 终态 → 预览 → 对账）
+    - ✅ **端到端 HTTP 段已跑通**（2026-09-15，重启 worker 后）：
+      `queued → retrieving → planning → generating → done`、预览 HTTP 200、对账两侧齐全。
+      注意轮询间隔 2s 时**可能看不到 `routing` 那一格**（它只持续约 1 秒）——
+      这是轮询粒度的正常现象，不是阶段没上报
+    - ⚠️ **`gen_type="agent"` 依赖"worker 是新代码"**：FastAPI dev 会热重载，
+      但 **arq worker 不会** —— 改了 worker 涉及的代码（agents/、services/）必须重启
+      `arq app.core.worker.WorkerSettings`，否则 agent 任务会立刻失败并报"生成类型 agent 尚未实现"
     - **agent 模式没有写进前端**：当前只有 `/api/generation/create` 的 `gen_type` 支持它，
       前端仍是 single/multi（阶段 8 做会话式 Generate 页时一起改）
     - **循环中途不向用户提问**、**不做 LangGraph checkpoint 断点恢复**：都是刻意的 V1 边界
-    - 本次验证留下若干临时账号（`wagent*` / `probe*` / `poll*`）与 1 条失败任务
-      （`gen_type=agent`，因旧 worker 报"尚未实现"），如需清理请手动处理
+    - 本次验证留下若干临时账号（`wagent*` / `probe*` / `poll*`）与若干探针任务/产物
+      （含 1 条因旧 worker 报"尚未实现"的失败任务、1 条成功的 `07fd418f…`），如需清理请手动处理
 - **阶段 6 交付（2026-09-15）★主流程打通**：
   - **内层 ReAct 环**：`app/agents/web/web_agent.py` —— 手写 `StateGraph`
     （`model`(bind_tools) → 条件边 → `ToolNode` → 回 `model`）；每次生成新建 store + 新建图；
@@ -466,7 +466,11 @@
 
     两者都"自主调工具 + 自主拆解 + 看懂注入的错误并改正"；**思考模式更省**（输出少 1029、步数少 1），
     故 `DEFAULT_THINKING` 保持 `True`（**默认客户端由这次数据确定**）；
-    ③ 端到端 HTTP 段**待 worker 重启**（见下"待办与遗留"）；
+    ③ **端到端 HTTP 段（worker 重启后已跑通）**：
+    `create(agent)` → 202 / `queued` → 轮询到 `retrieving(40%) → planning(55%) → generating(70%) → done(100%)`
+    → `status=success`、耗时 19246ms、产物 `['index.html']` →
+    预览 `GET /preview/13/<task_uuid>/index.html` **HTTP 200（10928 字符）** →
+    对账行 = 预估 `easy / 1 文件 / 预算 6 步` ↔ 实际 `2 步 / 1 文件 / success`；
     ④ **进程内流水线**（真模型 + 真 MySQL/PG + 真落盘）通过 ——
     `status=success` / 阶段 `done` / 19.8s / in=13120 out=4917 /
     产物 `['index.html']` 落盘且 trace 落盘 /
@@ -594,7 +598,10 @@
   `mark_outcome()` 回填实际值 + 落盘产物与 trace + 三态终态）、
   `gen_type="agent"` + 可选 `session_uuid`、`generation_task.sessionUuid` 列与 DDL 脚本；
   新增 `check_web_agent.py` 与 51 个离线用例（共 438 个）；
-  **默认客户端由实测确定**：思考模式 6585 输出 token / 3 步，非思考 7614 / 4 步（两者都通过门禁）
+  **默认客户端由实测确定**：思考模式 6585 输出 token / 3 步，非思考 7614 / 4 步（两者都通过门禁）；
+  **端到端 HTTP 段于同日 worker 重启后补跑通过**：
+  `queued → retrieving → planning → generating → done`、预览 HTTP 200（10928 字符）、
+  对账 预估 `easy,1 文件,6 步` ↔ 实际 `2 步,1 文件,success`（19246ms）
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）
