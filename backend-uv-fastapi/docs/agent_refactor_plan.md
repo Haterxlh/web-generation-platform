@@ -224,8 +224,8 @@ backend-uv-fastapi/
 │  │  ├─ source/role_policy.py      # ★新：角色裁决（只有 HTML 能当风格源；纯函数）
 │  │  ├─ source/doc_digest_agent.py # **仅文件** → RequirementDigest（map-reduce，结果可缓存）
 │  │  ├─ merge/requirement_merge.py # 对话摘要 + 四来源冲突消解 → FinalRequirement
-│  │  ├─ rag/need_rag.py            # 是否需要检索（一期即做，真实输出）
-│  │  ├─ rag/retriever.py           # ★接口 + 桩 provider（一期恒 skipped）
+│  │  ├─ rag/need_rag.py            # 是否需要检索（真实现，产出真实判定）
+│  │  ├─ rag/retriever.py           # 接口 + 桩 provider（判定不需要→skipped；需要→miss 且自报未接入）
 │  │  ├─ plan/plan_agent.py         # 结构化 FilePlan
 │  │  ├─ web/tools.py               # 虚拟文件系统工具集
 │  │  ├─ web/web_agent.py           # 内层 ReAct 环
@@ -788,7 +788,7 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   - **已知代价**：upload 是同步接口，长文档会串行多次模型调用（块预算 4000 字符 / 上限 12 块）；
     阶段 6 接进 worker 后应改为异步。附件删除 / 重传接口未做（列已就绪，`list_aliases` 已按不可复用实现）
 
-### 阶段 4｜个人 RAG **占位**（不是实现）
+### 阶段 4｜个人 RAG **占位**（不是实现）—— ✅ 已完成（2026-09-15）
 - **产出**：`agents/rag/need_rag.py`（**真实现**）、`agents/rag/retriever.py`（接口 + 桩 provider）
 - **要点**：
   - `need_rag` 判定逻辑一期就写完并产出**真实结果**，只是"查"这一步不接
@@ -796,6 +796,34 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   - `requirement_merge` 必须把 RAG 当成**可选的第 5 个输入块**，桩阶段恒为空，
     merge 逻辑不感知它是否实现 → **二期只替换 provider，不动图结构、不动 prompt 骨架**
 - **验收**：`skipped` 路径可复现；把 provider 换成假实现后，`hit` / `miss` 两条路径也能跑通
+- **实际交付与偏差（2026-09-15）**：
+  - 交付：`app/agents/state.py`（+`RagChunk` / `RagResult`）、`app/agents/rag/need_rag.py`、
+    `app/agents/rag/retriever.py`、`app/prompts/need_rag_system.md`、
+    `app/utils/utils_check/check_rag.py`、`tests/test_need_rag.py`、`tests/test_retriever.py`，
+    以及 `requirement_merge` 的 `rag` 三态入口与提示词"来源 4"段落（+42 用例，共 335 个）
+  - **偏差 1：merge 的入口从 `rag_context: str` 换成 `rag: RagResult | None`** ——
+    计划里说"桩阶段恒为空"，但**空字符串表达不了三态**：`miss`（需要但没查到）必须变成不确定项，
+    `skipped`（本来就不需要）必须什么都不加。用字符串时这两件事长得一模一样，
+    而这正是"需求跑偏"最常见的起点。merge 尚未入图，因此这次契约变更没有外部调用方。
+  - **偏差 2：桩 provider 在"需要检索"时返回 `miss` 而不是 `skipped`，并且自报可用性** ——
+    `RetrieverProvider` 协议要求 provider 声明 `unavailable_reason`（None=能查）。
+    这样"检索未接入"与"用户资料里没有"是**两句不同的话**：
+    前者用户该等我们做完，后者用户该补资料。桩若伪装成"查了但没有"，
+    就是把我们的缺失说成用户的缺失（也正是本次改造一路在防的静默失败）。
+  - **偏差 3：`need_rag` 的降级方向做成参数（`on_failure_need`，默认 False）** ——
+    判定失败却报"需要检索"，在一期会立刻变成一条"知识库未命中"的告警，把用户引向错误的排查方向。
+    二期若希望"宁可多查一次"（漏检索比多检索更伤质量），改这个参数即可 ——
+    降级方向是一处显式决策，而不是散落在代码里的隐式行为。
+  - **偏差 4：`need=true` 却没给检索词时由 Python 兜底补 query** ——
+    放行空串会让二期拿空关键词去检索（必然查不到），而用户看到的是"你的资料里没有"。
+    兜底值由槽位/用户原话拼成并**记警告**（兜底质量不如模型，不声不响地兜底会让检索质量无从归因）。
+  - **实测结论**：离线六项全通过 —— `skipped` 时 provider **调用次数为 0**（不是"调了返回空"）、
+    桩 `miss` 自报未接入、`hit` 保留 L1 来源层级、`user_id=0` 被拒绝、
+    merge 的 `miss→uncertainty` / `skipped→静默` 分派正确、工厂返回桩；
+    **真实模型两例**：通用需求（番茄钟）→ `need=False`；"按我们公司的品牌色和 VI 规范" →
+    `need=True` 且 `query='公司 品牌色 VI规范 产品名'`（关键词而非问句），单次约 1k in / 100 out
+  - **已知代价**：一期无法端到端验证检索质量（`hit` 只能用假 provider 跑通）；
+    `need_rag` 每次生成多一次模型调用（约 1k in），只在生成路径跑，对话路径不跑
 
 ### 阶段 5｜plan-agent
 - **产出**：`agents/plan/plan_agent.py`、`app/prompts/plan_agent_system.md`、`FilePlan` 模型
@@ -915,9 +943,10 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
 | 2026-09-15 | 阶段 3：解析层（离线，真实字节） | GBK `.txt` / 坏编码 `.txt` / `.md` / HTML / 扫描版 PDF / 手写两页 PDF | GBK 正确解码为 `gb18030`；坏编码**明确报错**（不静默产乱码）；`.md` 骨架不含代码块里的 `#`；HTML 令牌 `#0f172a`/`Inter`/`8px`/`@media×1` 与源文件一致；扫描版与坏 PDF 各自报出可执行的原因 | **通过** —— 解析层脱离模型即可断言，这是"解析与理解分两层"的直接收益 |
 | 2026-09-15 | 阶段 3：上传全链路（真实模型 + 真实 HTTP） | `.md`（需求说明书）/ 设计规范 `.html` / 两页真实 PDF / GBK `.txt` / 扫描版 PDF | `@doc1` content、`@doc2` style（配色取自解析器）、`@doc3`/`@doc4` success；扫描版 **HTTP 200 + `parse_status=failed`**；列表返回别名与文件名 | **通过** —— 要素材/要求分流正确（要求进了 `constraints`），且坏文件不产生 5xx |
 | ✅ | 阶段 3：文档解析 + digest + 上传 + merge —— **已完成（2026-09-15）** | — | — | — |
+| 2026-09-15 | 阶段 4：三态语义与安全边界（离线） | 假 provider / 桩 provider / 非法 user_id / merge | `skipped` 时 provider 调用次数 **0**；桩 `miss` 自报"尚未接入"；`hit` 保留 L1/L2；`user_id=0` 被拒绝；merge `miss→uncertainty`、`skipped→无提示` | **通过** —— "不适用"与"失败"在代码层面被彻底分开 |
+| 2026-09-15 | 阶段 4：检索必要性判定（真实模型） | 通用需求（番茄钟）/ 指代私人资料（"按我们公司的品牌色和 VI 规范"） | 前者 `need=False`（理由：通用功能页面，需求已完整写在输入中）；后者 `need=True`、`query='公司 品牌色 VI规范 产品名'` | **通过** —— 检索词是关键词而非问句；单次约 1k in / 100 out |
+| ✅ | 阶段 4：个人 RAG 占位 —— **已完成（2026-09-15）** | — | — | — |
 | ✅ | 阶段 0：异步骨架 —— **已完成（2026-09-15）**，见上方两条实测记录 | — | — | — |
-| | 阶段 2：意图路由正确率（三类输入） | | | |
-| 2026-09-15 | 阶段 3：PDF / HTML 解析质量 | 真实两页 PDF / 设计规范 HTML | 见上方两条（解析层与上传全链路） | **通过** |
 | | 阶段 6：模型自主性三层验证 | | | |
 | | 阶段 7：新旧实现对照 | | | |
 

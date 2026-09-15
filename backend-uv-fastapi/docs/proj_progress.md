@@ -147,8 +147,8 @@
     2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
-### 模块：Agent 框架（阶段 0~3）
-- **状态**：进行中（阶段 0、1、2、3 已完成；阶段 4~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
+### 模块：Agent 框架（阶段 0~4）
+- **状态**：进行中（阶段 0、1、2、3、4 已完成；阶段 5~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
 - **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
   并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示
 - **已交付内容**：
@@ -208,6 +208,14 @@
     没有混进 `content_points`**）、`.html` → `@doc2` / `role=style` 且配色来自解析器实测值、
     **真实两页 PDF** → `@doc3` 解析成功、**GBK `.txt`** → `@doc4` 解析成功、
     扫描版 PDF → **HTTP 200 + `parse_status=failed`**（不是 5xx）、附件列表返回别名与文件名
+  - **阶段 4（2026-09-15）**：`pytest` **335 个用例全绿**（293 → 新增 42，全程离线）；
+    `check_rag` 两段全通过 ——
+    ① **离线三态与安全边界六项**：`skipped` 时 provider **调用次数为 0**、桩 `miss` 自报"尚未接入"、
+    `hit` 保留片段与 L1 来源层级、`user_id=0` 被拒绝、merge 的 `miss→uncertainty` 与
+    `skipped→无提示` 分派正确、工厂返回桩且自报不可用；
+    ② **真实模型判定**：通用需求（番茄钟）→ `need=False`（理由"通用功能页面，需求已完整写在输入中"）、
+    指代私人资料（"按我们公司的品牌色和 VI 规范"）→ `need=True` 且
+    `query='公司 品牌色 VI规范 产品名'`（**关键词而不是问句**），单次 0.97~0.98k in / 71~105 out
 - **本轮修复（2026-09-15）**：
   1. **`docker-compose.yml` 的 PG 数据卷路径**（用户实测发现并修正）：
      PG 18+ 镜像期望挂载整个 `/var/lib/postgresql`，并在其下自建 `18/docker` 子目录存放数据；
@@ -298,6 +306,37 @@
        避免"进提示词的摘要"与"给前端看的摘要"两套渲染规则漂移；
     3. `_load_attachment_targets` 不再读请求里的 `role`（以库里那一行为准）——
        否则前端可带 `role=style` 绕过 Python 的能力否决
+- **阶段 4 交付（2026-09-15）**：
+  - **契约**：`app/agents/state.py` 新增 `RagChunk`（`source_type` 区分 **L1 conversation / L2 document**）、
+    `RagResult`（三态 `hit` / `miss` / `skipped` + query + reason + warnings + usage + `as_prompt_text()`）
+  - **`need_rag` 节点（真实现）**：`app/agents/rag/need_rag.py` + `app/prompts/need_rag_system.md` ——
+    一次结构化调用产出 `need` / `query` / `reason`；
+    **Python 两处兜底**：① `need=true` 却没给检索词 → 用槽位/用户原话补一个可用的关键词串并记警告
+    （放行空串会让二期检索必然空转，而用户看到的是"你的资料里没有"）；
+    ② 调用失败 → 默认判 **不需要**（`on_failure_need=False`，一处可配置的显式决策）并记降级
+  - **retriever 接口 + 桩 provider**：`app/agents/rag/retriever.py` ——
+    `RetrieverProvider` 协议要求 provider **自报可用性**（`unavailable_reason`：None=能查，
+    非 None=查不了），因此桩返回的 `miss` 能区分"未接入"与"真的没查到"（措辞完全不同：
+    前者用户该等我们做完，后者用户该补资料）；
+    `skipped` 时**连 provider 都不构造、不调用**；`build_retriever_provider()` 是**二期唯一切换点**
+  - **merge 契约升级**：`merge(..., rag_context: str)` → `merge(..., rag: RagResult | None)` ——
+    `hit` → 留下 rag 证据（note 里带检索词与命中数）+ 片段进提示词；
+    `miss` → **写入 `uncertainty`**（面向用户、带可执行动作"补充说明或直接上传文件"）；
+    `skipped` → **什么都不加**（给每个通用页面挂一条"未命中"只会让用户学会忽略所有提示）；
+    提示词"来源 4"段落按三态分别写明（miss 时明确禁止编造用户的事实）
+  - **安全边界**：`retrieve(user_id, ...)` 的 `user_id` 是**必填位置参数、无默认值**，
+    且函数入口拒绝非正整数（硬约束 4：pgvector 查询漏过滤 = A 能检索到 B 的私人文档），
+    并有回归用例断言 user_id 原样透传到 provider
+  - **自检与测试**：新增 `check_rag.py`（离线三态/安全边界六项 + 真实模型判定两例）、
+    `tests/test_need_rag.py`、`tests/test_retriever.py`，并向 `test_requirement_merge.py` 追加 RAG 三态用例
+  - **偏差 / 计划外增补**：
+    1. `RagResult` 增加 `warnings` 字段（与其它节点对齐）：provider 返回空片段、
+       检索能力不可用这类信息不该被吞掉；
+    2. `need_rag` 的降级方向做成**参数**（`on_failure_need`）而不是硬编码：
+       一期默认"不需要"（失败却报"需要"会立刻变成一条误导用户的告警），
+       二期若要"宁可多查一次"只需改这个参数；
+    3. 顺带修掉 `test_requirement_merge.py` 中两处把**系统提示词**也拼进断言的写法 ——
+       提示词为解释规则同样会提到"来源 4"，会让"位置顺序"断言失去意义（改为只检查用户消息）
 - **待办与遗留**：
   - ✅ **`npm run lint` / `tsc -b` / `npm run build` 已于 2026-09-15 全部通过**；此前 2 个 `react-hooks/set-state-in-effect` 报错（位于
     `hooks/AuthProvider.tsx` 与 `pages/Projects/ProjectsPage.tsx`）已修复，详见上方"本轮修复（2026-09-15）"
@@ -316,6 +355,16 @@
       以及 `backend-uv-fastapi/uploads/{user_id}/...` 下的文件（已被 gitignore，如需清理请手动处理）
     - `check_source_upload.py` 的 PDF 造数（`_text_pdf`）与 `tests/test_doc_parsers.py` 的
       `_build_text_pdf` 是两份等价实现：自检脚本刻意不 import 测试代码，若将来 PDF 造数逻辑变化需同步改两处
+  - **阶段 4 遗留**：
+    - **检索本身仍未实现**（一期就不做）：没有向量表、没有 embedding、没有 pgvector 查询 ——
+      二期要做的全部工作是把 `build_retriever_provider()` 换成真实现（华为云 BGE-M3 + pgvector），
+      图结构与提示词骨架不需要动
+    - **`need_rag` 是每轮生成路径各一次模型调用**（约 1k in / 100 out）：只在生成路径（阶段 6 的 worker）里跑，
+      对话路径不跑；若将来嫌贵，可先按"会话内是否出现过疑似私人指代"做前置筛（代价是判定口径会出现两处）
+    - **L1/L2 的入库与保留策略仍是空白**：`agent_message.is_memorable`（阶段 2 已就位）只是标记，
+      二期的 `knowledge_chunk.source_type` 必须与 `RagChunk.source_type` 对齐，否则检索结果无法按层级调权
+    - 一期**无法端到端验证检索质量**（`hit` 只能用假 provider 跑通）—— 刻意接受的范围限制
+    - merge 已支持 `rag` 三态，但**尚未入图**（阶段 6 orchestrator 才把 `need_rag → retrieve → merge` 串起来）
 
 ## 2. 项目级约定（跨模块通用）
 - 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
@@ -337,10 +386,13 @@
 - [x] **Agent 框架阶段 2**（已完成 2026-09-15，见上方模块进度）
 - [x] **Agent 框架阶段 3**（已完成 2026-09-15）：文档解析 + digest-agent + 上传接口 + merge 节点
       （merge 已实现并单测，**阶段 6 才入图**；见上方模块进度）
-- [ ] **Agent 框架阶段 4**：个人 RAG **占位** —— `agents/rag/need_rag.py`（真实现，三态
-      `hit`/`miss`/`skipped`）、`agents/rag/retriever.py`（接口 + 桩 provider，一期恒 `skipped`）；
-      `requirement_merge` 已把 RAG 当作第 4 个来源（`rag_context` 恒空时不留证据、不产生不确定项），
-      **二期只替换 provider，不动图结构、不动 prompt 骨架**（归属：Agent 框架）
+- [x] **Agent 框架阶段 4**（已完成 2026-09-15）：个人 RAG 占位 —— `agents/rag/need_rag.py`（真实现）、
+      `agents/rag/retriever.py`（接口 + 桩 provider）、`merge` 的 `rag` 三态入口；
+      **二期只替换 provider**（见上方模块进度）
+- [ ] **Agent 框架阶段 5**：plan-agent —— `agents/plan/plan_agent.py` + `plan_agent_system.md`、
+      `FilePlan` 契约（`difficulty` / `files[]` / `tech_constraints` / `assets`）、
+      Alembic 建 `generation_plan` 表（存 `FinalRequirement` 与 `FilePlan`）；
+      **难度必须真的映射 web-agent 的步数上限与预算**，文件名要过 `safe_name` 白名单校验（归属：Agent 框架）
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
@@ -389,6 +441,15 @@
   三个提示词；新增 `check_source_upload.py` 与 **161 个离线用例（共 293 个）**；
   配套：`.gitignore` 增加 `uploads/`、`tests/conftest.py` 重定向 `tmp_path`、
   修掉 `check_agent_chat.py` 在 GBK 控制台打印 emoji 崩溃的问题
+- **2026-09-15（Agent 框架阶段 4）**：落地**个人 RAG 占位**（真判定、假检索）——
+  `agents/state.py`（+`RagChunk` / `RagResult`，三态 `hit`/`miss`/`skipped`，`source_type` 区分 L1/L2）、
+  `agents/rag/need_rag.py`（真实现：结构化判定 + 两处 Python 兜底）、
+  `app/prompts/need_rag_system.md`、
+  `agents/rag/retriever.py`（`RetrieverProvider` 协议 + **自报可用性**的桩 provider + 二期唯一切换点
+  `build_retriever_provider()`；`user_id` 必填且拒绝非正数）、
+  `merge` 的入口从 `rag_context: str` 升级为 `rag: RagResult | None`
+  （`hit`→证据+片段、`miss`→uncertainty、`skipped`→静默）；
+  新增 `check_rag.py` 与 42 个离线用例（共 335 个）
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）

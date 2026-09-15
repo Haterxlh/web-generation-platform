@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from app.agents.common import ModelUsage
 from app.agents.state import (
     FinalRequirement,
+    RagResult,
     RequirementDigest,
     RequirementSlots,
     RequirementSource,
@@ -105,7 +106,7 @@ def merge(
     slots: RequirementSlots | None = None,
     draft_summary: str = "",
     digests: Sequence[tuple[str, RequirementDigest]] = (),
-    rag_context: str = "",
+    rag: RagResult | None = None,
     chain: Runnable | None = None,
 ) -> MergeResult:
     """把四个来源归并成一份最终需求。
@@ -115,14 +116,17 @@ def merge(
         slots: 会话已累积的槽位（对话澄清摘要的结构化形态）。
         draft_summary: 会话草稿的一句话摘要（对话澄清摘要的文字形态）。
         digests: ``(来源标识, digest)`` 列表；来源标识一般是 ``@doc1`` 或文件名。
-        rag_context: 个人知识库检索结果（**一期恒为空**，阶段 4 才可能有内容）。
+        rag: 个人知识库检索结果（阶段 4 起可能非空，一期通常是 ``skipped`` 或 ``miss``）。
+            ⚠️ 刻意收**三态对象**而不是一个文本片段：``miss``（需要但没查到）
+            必须变成不确定项，``skipped``（本来就不需要）必须什么都不加 ——
+            一个字符串无法区分这两件事。
         chain: 可注入的链（测试用）。
 
     Returns:
         `MergeResult`（最终需求 + 是否降级 + 用量 + 警告）。
     """
     current_slots = slots or RequirementSlots()
-    sources = _build_sources(user_message, draft_summary, digests, rag_context)
+    sources = _build_sources(user_message, draft_summary, digests, rag)
     digest_uncertainty = [
         f"{ref}：{item}" for ref, digest in digests for item in digest.open_questions
     ]
@@ -131,12 +135,14 @@ def merge(
         SystemMessage(content=load_prompt(PROMPT_NAME)),
         HumanMessage(
             content=_build_merge_message(
-                user_message, current_slots, draft_summary, digests, rag_context
+                user_message, current_slots, draft_summary, digests, rag
             )
         ),
     ]
 
     warnings: list[str] = []
+    if rag is not None:
+        warnings.extend(rag.warnings)
     try:
         result = (chain or _MERGE).invoke(payload)
     except Exception as error:  # noqa: BLE001 —— 归并失败不能拖垮整条链路
@@ -146,6 +152,7 @@ def merge(
             user_message=user_message,
             slots=current_slots,
             digests=digests,
+            rag=rag,
             sources=sources,
             digest_uncertainty=digest_uncertainty,
             reason=f"merge 调用失败：{detail}",
@@ -162,6 +169,7 @@ def merge(
             user_message=user_message,
             slots=current_slots,
             digests=digests,
+            rag=rag,
             sources=sources,
             digest_uncertainty=digest_uncertainty,
             reason="merge 结构化解析失败",
@@ -177,8 +185,11 @@ def merge(
         style_spec=style_spec,
         constraints=_dedupe(decision.constraints),
         sources=sources,
-        # 文档里"没说清的点"必须一路传下去 —— 模型可能没把它写进 uncertainty
-        uncertainty=_dedupe([*decision.uncertainty, *digest_uncertainty]),
+        # 文档里"没说清的点"与"知识库没查到的资料"都必须一路传下去 ——
+        # 模型可能没把它们写进 uncertainty，但这正是最不能让下游凭空补全的两类信息
+        uncertainty=_dedupe(
+            [*decision.uncertainty, *digest_uncertainty, *_rag_uncertainty(rag)]
+        ),
     )
     return MergeResult(requirement=requirement, degraded=False, usage=usage, warnings=warnings)
 
@@ -250,15 +261,18 @@ def _build_sources(
     user_message: str,
     draft_summary: str,
     digests: Sequence[tuple[str, RequirementDigest]],
-    rag_context: str,
+    rag: RagResult | None,
 ) -> list[RequirementSource]:
     """生成来源证据清单（**事实，不由模型产出**）。
+
+    ⚠️ 只有 ``hit`` 才记 rag 证据：``miss`` 意味着**什么都没拿到**，
+    把它写成"来自个人知识库"的证据，等于凭空捏造一条出处。
 
     Args:
         user_message: 用户本轮原话。
         draft_summary: 会话草稿摘要。
         digests: 各文档理解结果。
-        rag_context: 知识库检索结果。
+        rag: 知识库检索结果（可为 None）。
 
     Returns:
         证据清单（按优先级排序）。
@@ -274,9 +288,41 @@ def _build_sources(
         sources.append(
             RequirementSource(kind="doc", ref=ref, note=f"上传文档（角色：{digest.role}）")
         )
-    if rag_context.strip():
-        sources.append(RequirementSource(kind="rag", ref="个人知识库", note="检索命中的片段"))
+    if rag is not None and rag.status == "hit" and rag.chunks:
+        sources.append(
+            RequirementSource(
+                kind="rag",
+                ref="个人知识库",
+                note=f"检索命中 {len(rag.chunks)} 段（检索词：{rag.query or '未记录'}）",
+            )
+        )
     return sources
+
+
+def _rag_uncertainty(rag: RagResult | None) -> list[str]:
+    """把 RAG 的"没查到"翻译成**面向用户**的不确定项。
+
+    三条规则（阶段 4 的核心语义）：
+
+    - ``hit`` → 不需要额外提示（资料已经拿到并进了提示词）；
+    - ``skipped`` → **什么都不加**：判定本来就不需要私人资料，静默是正确的；
+    - ``miss`` → 必须显式写出来，并给用户一个可执行的动作（补一句话或直接传文件）。
+
+    ⚠️ 这里的"沉默"与"不沉默"是刻意分开的：把 ``skipped`` 也写成提示，
+    会让每个通用页面都挂着一条无意义的"知识库未命中"，用户很快就学会忽略所有提示。
+
+    Args:
+        rag: 检索结果。
+
+    Returns:
+        需要追加到 `uncertainty` 的条目（可能为空）。
+    """
+    if rag is None or rag.status != "miss":
+        return []
+    return [
+        f"个人知识库未命中：{rag.reason or '没有找到相关资料'}；"
+        "如果该需求依赖你的私有资料，请补充说明或直接上传对应文件"
+    ]
 
 
 def _degraded_result(
@@ -284,6 +330,7 @@ def _degraded_result(
     user_message: str,
     slots: RequirementSlots,
     digests: Sequence[tuple[str, RequirementDigest]],
+    rag: RagResult | None,
     sources: list[RequirementSource],
     digest_uncertainty: list[str],
     reason: str,
@@ -291,13 +338,14 @@ def _degraded_result(
 ) -> MergeResult:
     """归并失败时的兜底：用 Python 把各来源直接拼一份需求（**不假装成功**）。
 
-    兜底也要保住两样东西：**用户说过的槽位**与**文档里的硬要求**，
-    并把"这次归并没有经过模型"写进 uncertainty，让下游知道需求可能不够收敛。
+    兜底也要保住三样东西：**用户说过的槽位**、**文档里的硬要求**、
+    以及**知识库没查到这件事**，并把"这次归并没有经过模型"写进 uncertainty。
 
     Args:
         user_message: 用户本轮原话。
         slots: 已累积槽位。
         digests: 各文档理解结果。
+        rag: 知识库检索结果。
         sources: 来源证据。
         digest_uncertainty: 文档里的待确认项。
         reason: 降级原因。
@@ -311,6 +359,7 @@ def _degraded_result(
     uncertainty = _dedupe(
         [
             *digest_uncertainty,
+            *_rag_uncertainty(rag),
             f"需求归并未经过模型整合（{reason}），可能存在遗漏或未消解的冲突",
         ]
     )
@@ -355,7 +404,7 @@ def _build_merge_message(
     slots: RequirementSlots,
     draft_summary: str,
     digests: Sequence[tuple[str, RequirementDigest]],
-    rag_context: str,
+    rag: RagResult | None,
 ) -> str:
     """拼出归并阶段的用户消息（四个来源按优先级排列）。"""
     parts = [
@@ -377,6 +426,6 @@ def _build_merge_message(
 
     parts.append(
         "## 来源 4（最低优先级）：个人知识库检索结果\n"
-        + (rag_context.strip() or "（一期未接入，恒为空）")
+        + (rag.as_prompt_text() if rag is not None else "（本次未做检索判定）")
     )
     return "\n\n".join(parts)

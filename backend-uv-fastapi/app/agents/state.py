@@ -282,6 +282,80 @@ class StyleSpec(BaseModel):
         )
 
 
+class RagChunk(BaseModel):
+    """个人知识库里的一个检索片段（阶段 4 定义契约，二期才真有数据）。
+
+    ⚠️ ``source_type`` 从第一天就必须区分 **L1 / L2**（硬约束 14）：
+
+    - ``conversation``（L1）：用户**说过的话**（偏好、口径、"我们公司规定…"）；
+    - ``document``（L2）：用户**上传的资料**（PDF / HTML / Markdown 的正文）。
+
+    两者的证据强度不同：用户亲口说的可以直接当约束；从文档里检索出来的段落
+    必须能被追溯到具体文件与位置。混在一个集合里，二期就无法按来源调整权重，
+    也无法回答"这条要求的出处在哪"。
+    """
+
+    chunk_id: str = Field(default="", description="片段唯一标识（二期由向量表给出）")
+    source_type: Literal["document", "conversation"] = Field(
+        description="来源层级：document=L2 上传资料 / conversation=L1 用户说过的话"
+    )
+    source_ref: str = Field(default="", description="来源标识（文件名 / @doc1 / 会话轮次）")
+    text: str = Field(description="片段正文（会进提示词，所以要短）")
+    score: float | None = Field(default=None, description="相似度得分（二期才有意义）")
+
+
+class RagResult(BaseModel):
+    """一次"是否需要个人知识库、以及查到了什么"的结果（阶段 4 起使用）。
+
+    **三态语义从第一天就是真的**（docs/agent_refactor_plan.md 阶段 4）：
+
+    - ``skipped``：判定**不需要**私人资料（通用页面），**根本没有去查**；
+    - ``miss``：需要，也去查了，但**没查到**（或检索能力尚未接入）；
+    - ``hit``：需要且查到了片段。
+
+    ``miss`` 与 ``skipped`` 绝不能合并成一个"空"：
+    前者意味着"用户要的东西我们没找到"，必须作为**不确定项**传给下游与用户；
+    后者意味着"这事本来就不需要"，静默是正确的。
+    合并之后，下游就无法区分"不适用"与"失败"，而这正是需求跑偏的常见起点。
+    """
+
+    status: Literal["hit", "miss", "skipped"] = Field(description="检索三态")
+    query: str = Field(default="", description="实际使用的检索词（排查用，也便于二期调优）")
+    chunks: list[RagChunk] = Field(default_factory=list, description="命中的片段（hit 才有）")
+    reason: str = Field(default="", description="为什么未命中 / 为什么不需要（面向用户）")
+    degraded: bool = Field(default=False, description="判定或检索是否走了降级路径")
+    warnings: list[str] = Field(default_factory=list, description="非致命问题（不静默降级）")
+    usage: ModelUsage = Field(
+        default_factory=ModelUsage, description="判定消耗的 token（检索本身不烧 token）"
+    )
+
+    @property
+    def needs_personal_knowledge(self) -> bool:
+        """本次需求是否需要用户的私人知识库（``skipped`` 之外都为真）。"""
+        return self.status != "skipped"
+
+    def as_prompt_text(self) -> str:
+        """渲染成"给模型看"的检索结果。
+
+        ``miss`` 与 ``skipped`` 都要**明说**，不能返回空串 ——
+        空串会被模型理解为"用户资料里没有"，于是它开始编。
+        """
+        if self.status == "hit":
+            lines = [
+                f"- [{chunk.source_type}] {chunk.source_ref or '未标注来源'}："
+                f"{' '.join(chunk.text.split())[:300]}"
+                for chunk in self.chunks
+            ]
+            return "【个人知识库命中片段】\n" + "\n".join(lines)
+        if self.status == "miss":
+            return (
+                "【个人知识库未命中】\n"
+                f"检索词：{self.query or '（无）'}\n原因：{self.reason or '未找到相关资料'}\n"
+                "⚠️ 用户资料里**没有**可用的依据：不要据此编造用户的事实（如公司名、产品名、数据）。"
+            )
+        return "【个人知识库】本次需求不需要私人资料，未进行检索。"
+
+
 class RequirementSource(BaseModel):
     """一条需求的**来源证据**（用于追溯"这句话是从哪来的"）。
 

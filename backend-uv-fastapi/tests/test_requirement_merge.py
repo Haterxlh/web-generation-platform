@@ -22,6 +22,8 @@ from app.agents.merge.requirement_merge import (
 )
 from app.agents.state import (
     FinalRequirement,
+    RagChunk,
+    RagResult,
     RequirementDigest,
     RequirementSlots,
     StyleSpec,
@@ -80,6 +82,23 @@ def _digest(
     )
 
 
+def _rag_hit(*, text: str = "公司主色 #123456", query: str = "品牌色") -> RagResult:
+    """造一个命中结果。"""
+    return RagResult(
+        status="hit",
+        query=query,
+        chunks=[
+            RagChunk(
+                chunk_id="c1",
+                source_type="conversation",
+                source_ref="第 2 轮",
+                text=text,
+                score=0.91,
+            )
+        ],
+    )
+
+
 def _decision(**kwargs: object) -> MergeDecision:
     """造一个模型判定，未指定字段用合理默认值。"""
     payload: dict = {
@@ -107,13 +126,14 @@ def test_sources_record_all_four_kinds() -> None:
         slots=RequirementSlots(site_kind="单页展示"),
         draft_summary="用户想要一个待办工具",
         digests=[("@doc1", _digest(content_points=["标题：我的待办"]))],
-        rag_context="知识库片段：公司主色 #123456",
+        rag=_rag_hit(text="公司主色 #123456"),
         chain=_chain(_decision()),
     )
 
     assert [item.kind for item in result.requirement.sources] == ["user", "chat", "doc", "rag"]
     assert result.requirement.sources[0].ref == "做个待办清单，参考 @doc1"
     assert result.requirement.sources[2].ref == "@doc1"
+    assert "检索命中 1 段" in result.requirement.sources[3].note
 
 
 def test_sources_skip_empty_inputs() -> None:
@@ -132,15 +152,21 @@ def test_long_user_message_is_clipped_in_evidence() -> None:
     assert ref.endswith("…")
 
 
-def test_rag_source_only_when_context_present() -> None:
-    """一期 RAG 恒空 → 不该凭空出现一条"知识库"证据。"""
+def test_rag_source_only_when_hit() -> None:
+    """只有 hit 才留下"个人知识库"证据：miss 是**什么都没拿到**，写成出处就是捏造。"""
     without = merge(user_message="做个页面", chain=_chain(_decision()))
-    with_rag = merge(
-        user_message="做个页面", rag_context="命中片段", chain=_chain(_decision())
+    missed = merge(
+        user_message="做个页面",
+        rag=RagResult(status="miss", query="品牌色", reason="没有相关资料"),
+        chain=_chain(_decision()),
+    )
+    hit = merge(
+        user_message="做个页面", rag=_rag_hit(text="主色 #123456"), chain=_chain(_decision())
     )
 
     assert "rag" not in [item.kind for item in without.requirement.sources]
-    assert "rag" in [item.kind for item in with_rag.requirement.sources]
+    assert "rag" not in [item.kind for item in missed.requirement.sources]
+    assert "rag" in [item.kind for item in hit.requirement.sources]
 
 
 # --------------------------------------------------------------------------
@@ -348,11 +374,15 @@ def test_degraded_merge_without_documents() -> None:
 
 
 def test_merge_message_orders_sources_by_priority() -> None:
-    """提示词里四个来源必须按优先级排列，并带上用户原话与文档内容。"""
+    """装配出来的用户消息里，四个来源必须按优先级排列，并带上用户原话与文档内容。
+
+    ⚠️ 只检查**用户消息**（payload 的最后一条），不是把系统提示词也拼进来：
+    系统提示词里为了解释规则同样会提到"来源 4"，拼在一起会让"位置顺序"这个断言失去意义。
+    """
     seen: list[str] = []
 
     def _record(payload: list) -> dict:
-        seen.append("\n".join(message.content for message in payload))
+        seen.append(payload[-1].content)
         return {"raw": _raw(), "parsed": _decision()}
 
     merge(
@@ -375,17 +405,17 @@ def test_merge_message_orders_sources_by_priority() -> None:
 
 
 def test_merge_message_marks_absent_documents() -> None:
-    """没有文档时要显式写"本轮没有文档"，否则模型会以为漏读了。"""
+    """没有文档、也没做检索判定时都要显式写明，否则模型会以为漏读了。"""
     seen: list[str] = []
 
     def _record(payload: list) -> dict:
-        seen.append("\n".join(message.content for message in payload))
+        seen.append(payload[-1].content)
         return {"raw": _raw(), "parsed": _decision()}
 
     merge(user_message="做个页面", chain=RunnableLambda(_record))
 
     assert "（本轮没有文档）" in seen[0]
-    assert "恒为空" in seen[0]
+    assert "（本次未做检索判定）" in seen[0]
 
 
 def test_final_requirement_json_serializable() -> None:
@@ -440,3 +470,121 @@ def test_model_usage_type_is_stable() -> None:
     result = merge(user_message="x", chain=_boom_chain())
 
     assert isinstance(result.usage, ModelUsage)
+
+
+# --------------------------------------------------------------------------
+# 7. RAG 三态：hit / miss / skipped 在 merge 里必须**三种不同**的待遇
+# --------------------------------------------------------------------------
+
+
+def test_rag_miss_becomes_user_facing_uncertainty() -> None:
+    """⚠️ 核心用例：miss（需要资料但没查到）必须变成**面向用户、可执行**的不确定项。"""
+    result = merge(
+        user_message="按我们公司的品牌色做个官网",
+        rag=RagResult(
+            status="miss", query="公司 品牌色", reason="个人知识库检索尚未接入（二期）"
+        ),
+        chain=_chain(_decision()),
+    )
+
+    uncertainty = result.requirement.uncertainty
+    assert any("个人知识库未命中" in item for item in uncertainty)
+    assert any("检索尚未接入" in item for item in uncertainty), "原因要带上，不能只说没命中"
+    assert any("上传对应文件" in item for item in uncertainty), "要给用户一个可执行的动作"
+
+
+def test_rag_skipped_adds_nothing() -> None:
+    """⚠️ skipped **什么都不加**：判定本就不需要私人资料，提示只会变成噪音。"""
+    result = merge(
+        user_message="做个计算器",
+        rag=RagResult(status="skipped", query="", reason="本次需求不需要私人知识库"),
+        chain=_chain(_decision()),
+    )
+
+    assert result.requirement.uncertainty == []
+    assert "rag" not in [item.kind for item in result.requirement.sources]
+
+
+def test_rag_hit_adds_source_but_no_uncertainty() -> None:
+    """hit：留下出处证据，但不该产生"未命中"这类不确定项。"""
+    result = merge(
+        user_message="按我们的品牌色来做",
+        rag=_rag_hit(text="公司主色 #123456"),
+        chain=_chain(_decision()),
+    )
+
+    assert "rag" in [item.kind for item in result.requirement.sources]
+    assert not any("未命中" in item for item in result.requirement.uncertainty)
+
+
+def test_rag_none_is_treated_as_no_retrieval() -> None:
+    """未接线时（rag=None）不应凭空产生 rag 证据或不确定项。"""
+    result = merge(user_message="做个页面", chain=_chain(_decision()))
+
+    assert "rag" not in [item.kind for item in result.requirement.sources]
+    assert result.requirement.uncertainty == []
+
+
+def test_rag_states_are_rendered_differently_in_prompt() -> None:
+    """⚠️ 提示词里三态必须**说清楚**：空串会被模型理解成"用户资料里没有"，然后开编。"""
+    seen: list[str] = []
+
+    def _record(payload: list) -> dict:
+        seen.append("\n".join(message.content for message in payload))
+        return {"raw": _raw(), "parsed": _decision()}
+
+    chain = RunnableLambda(_record)
+
+    merge(user_message="按我们品牌色做", rag=_rag_hit(text="主色 #123456"), chain=chain)
+    merge(
+        user_message="按我们品牌色做",
+        rag=RagResult(status="miss", query="品牌色", reason="检索尚未接入"),
+        chain=chain,
+    )
+    merge(user_message="做个计算器", rag=RagResult(status="skipped"), chain=chain)
+
+    assert "命中片段" in seen[0] and "#123456" in seen[0]
+    assert "未命中" in seen[1]
+    assert "不要据此编造" in seen[1], "未命中时要明确禁止模型编造用户的事实"
+    assert "不需要私人资料" in seen[2]
+
+
+def test_rag_warnings_are_forwarded() -> None:
+    """检索阶段产生的警告（如"检索能力不可用"）要带到调用方眼前。"""
+    result = merge(
+        user_message="按我们品牌色做",
+        rag=RagResult(
+            status="miss",
+            query="品牌色",
+            reason="检索尚未接入",
+            warnings=["检索能力不可用（provider=stub）：尚未接入"],
+        ),
+        chain=_chain(_decision()),
+    )
+
+    assert any("检索能力不可用" in item for item in result.warnings)
+
+
+def test_degraded_merge_still_reports_rag_miss() -> None:
+    """归并降级也不能把"知识库没查到"丢掉 —— 那是最需要用户知道的信息之一。"""
+    result = merge(
+        user_message="按我们公司规范做",
+        rag=RagResult(status="miss", query="公司 规范", reason="检索尚未接入"),
+        chain=_boom_chain(),
+    )
+
+    assert result.degraded is True
+    assert any("个人知识库未命中" in item for item in result.requirement.uncertainty)
+
+
+def test_merge_message_marks_absent_rag_decision_when_none() -> None:
+    """没做检索判定时要写明"未做检索判定"，不要让模型以为"查过了、没有"。"""
+    seen: list[str] = []
+
+    def _record(payload: list) -> dict:
+        seen.append("\n".join(message.content for message in payload))
+        return {"raw": _raw(), "parsed": _decision()}
+
+    merge(user_message="做个页面", chain=RunnableLambda(_record))
+
+    assert "本次未做检索判定" in seen[0]
