@@ -25,5 +25,7 @@ def test_openapi_has_expected_paths() -> None:
         "/api/generation/list",
         "/api/generation/{task_uuid}",
         "/api/generation/{task_uuid}/preview-ticket",
+        "/api/agent/chat",
+        "/api/agent/session/{session_uuid}",
     }
     assert expected <= paths, f"缺少路由：{sorted(expected - paths)}"

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.agent import router as agent_router
 from app.api.generation import router as generation_router
 from app.api.user import router as user_router
 from app.core.arq_pool import close_pool, init_pool
@@ -55,6 +56,9 @@ app.include_router(user_router, prefix="/api")
 # 登记生成模块路由
 # → /api/generation/create（202 异步提交）、/list、/{task_uuid}、/{task_uuid}/preview-ticket
 app.include_router(generation_router, prefix="/api")
+
+# 登记 Agent 对话模块路由 → /api/agent/chat、/api/agent/session/{session_uuid}
+app.include_router(agent_router, prefix="/api")
 
 # 把产物目录挂成静态资源：/preview/1/<task_uuid>/index.html 可直接在浏览器打开
 # 坑 1：目录必须已存在，否则 StaticFiles 在【启动时】就报错（不是等请求来了才报）

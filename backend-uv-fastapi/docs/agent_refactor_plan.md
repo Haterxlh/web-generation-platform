@@ -40,6 +40,10 @@
 | 6 | 附件别名形态 | **系统生成 `@doc1` + `display_name` 展示原文件名** |
 | 7 | 异步执行器 | **Redis + arq**（独立 worker 进程）；**Redis 只做队列，任务状态真源在 MySQL**；`max_tries=1` 不自动重试 |
 | 8 | 教学模式 | 每个阶段先讲规划与前置条件，用户确认前置条件完成后，助手再编写代码 |
+| 9 | 意图路由 | **完全交给 AI**（结构化输出），**不做"关键词命中就跳过大模型"的规则前置**（2026-09-15 决策，覆盖 §阶段 2 的原"规则优先"设计） |
+| 10 | 推理产物落位 | `FinalRequirement` / `FilePlan` 放 **PG**（阶段 5 新建 `generation_plan` 表），不塞进 MySQL 的 JSON 列 |
+| 11 | 需求槽位 slots | 暂定 5 项：`site_kind` / `features` / `audience` / `style` / `need_persistence`（字段名即 API 契约） |
+| 12 | `create` 入口 | **也过 AI 完备度判定**；判定信息不足时任务停在 `stage=clarifying`（human-in-the-loop 暂停），**不标 failed** |
 
 ---
 
@@ -170,6 +174,41 @@ POST /api/agent/chat ──→ ┌─────────────── 
                                     {文件名: 内容} → service 落盘 + 落库
 ```
 
+#### 3.2.1 职责单元清单（agent 与节点）
+
+> 2026-09-15 与用户确认。**按"有没有循环 / 工具调用"严格划分，一期只有 `generation-agent` 是真 agent**，
+> 其余都是"结构化输出节点"。这不影响都叫 agent，但两者的**测试方式完全不同**（见本节末）。
+
+| 单元 | 类型 | 职责 | 何时跑 | 落位 |
+|---|---|---|---|---|
+| `intent_router` | 节点 | 意图 + 完备度 + slots 抽取 | 每轮对话；`create` 的 worker 内 | 阶段 2 |
+| `chat-agent` | 节点 | 澄清与建议 → 需求草稿 | `intent=chat` 或 `needs_clarification` | 阶段 2 |
+| `digest-agent` | 节点 | **仅文件** → `RequirementDigest`（含 content/style/both 判定） | 上传后，**结果可缓存、跨轮复用** | 阶段 3 实现 / 阶段 6 入图 |
+| `merge` | 节点 | **对话摘要 + 四来源冲突消解** → `FinalRequirement` | 需求装配 ⑪ | 阶段 3 实现 / 阶段 6 入图 |
+| `need_rag` + retriever | 节点 + 二期 provider | 判定是否需要私人知识库 | 需求装配 ⑩ | 阶段 4 |
+| `plan-agent` | 节点 | `FinalRequirement` → `FilePlan` | 循环前 ⑫ | 阶段 5 |
+| **`generation-agent`** | **真 agent** | ReAct 循环：工具调用写文件 | 循环 ⑬ | 阶段 6 |
+
+**三条划界理由（都影响实现，不是命名洁癖）**：
+
+1. **digest 与 merge 必须拆开**：digest 的输入是**不变的文件**，可以在上传时算一次并缓存进
+   `generation_source.digest`；merge 的输入是**一直在变的对话**，每次生成都要重算。
+   合成一个节点，就会把"本可不重算"的活每轮重做一遍 —— 附件越多越浪费。
+2. **merge 不只是"摘要"，更是"决策"**：用户显式要求 / 对话摘要 / 文档 digest / RAG 结果
+   四者可能互相矛盾（例：用户说"极简"，文档却给"深色大面积渐变"），必须按 §3.5 的优先级裁决。
+   做成可评审、可单测的独立步骤，远好过让 `generation-agent` 临场裁决 ——
+   后者既不可观测，也无法回归测试。
+3. **plan 保持独立节点（方案 A）**：GATE 需要一份**事先声明的文件清单**才能判定"交付完整"。
+   若把规划并进循环，完成判定就只能退回"模型说完了就算完" ——
+   那正是 §1 诊断出的原始毛病。附带好处：难度 → 步数/预算的映射可在**进入循环之前**确定，
+   规划错了也能立刻失败，不必等整个循环跑完。
+
+**测试方式的差别（阶段 1 已按这个思路在写）**：
+
+- **节点**：喂假模型 → 断言结构化产物。纯离线、快、稳（`llm_structured_client` 可注入）。
+- **agent**：必须断言**循环行为** —— 步数上限是否生效、工具调用序列、
+  "工具报错后是否改正"、以及门禁是否拦住"只写 1 个文件就宣布完成"。这是阶段 6 的验收重点。
+
 ### 3.3 目录落位
 
 ```
@@ -182,7 +221,8 @@ backend-uv-fastapi/
 │  │  ├─ orchestrator.py        # ★新：外层需求装配图
 │  │  ├─ router/intent_router.py    # 意图识别（规则优先 + LLM 结构化兜底）
 │  │  ├─ chat/chat_agent.py         # 澄清对话 → ClarifiedRequirement
-│  │  ├─ source/doc_digest_agent.py # 文档 → RequirementDigest（map-reduce）
+│  │  ├─ source/doc_digest_agent.py # **仅文件** → RequirementDigest（map-reduce，结果可缓存）
+│  │  ├─ merge/requirement_merge.py # 对话摘要 + 四来源冲突消解 → FinalRequirement
 │  │  ├─ rag/need_rag.py            # 是否需要检索（一期即做，真实输出）
 │  │  ├─ rag/retriever.py           # ★接口 + 桩 provider（一期恒 skipped）
 │  │  ├─ plan/plan_agent.py         # 结构化 FilePlan
@@ -221,7 +261,16 @@ backend-uv-fastapi/
 ### 3.4 数据与存储边界（**硬约定**）
 
 **MySQL 存业务**：`user`、`generation_task`（+ 阶段列）
-**PostgreSQL 存对话与知识库**：`agent_session`、`agent_message`、`generation_source`（+ 二期的 `knowledge_chunk`）
+**PostgreSQL 存「Agent 域」**：对话、知识库、**推理产物** —— `agent_session`、`agent_message`、
+`generation_source`（+ 阶段 5 的 `generation_plan`、二期的 `knowledge_chunk`）
+
+> **两域的划分口径**（2026-09-15 与用户确认）：
+> - **MySQL = 业务域**：用户、**任务生命周期**（状态 / 阶段 / 进度 / 用量）、产物元数据（目录 / 文件名）
+> - **PG = Agent 域**：对话、附件与别名、知识库，以及 `FinalRequirement` / `FilePlan` 这类**推理产物**
+>
+> 推理产物刻意放 PG，而不是塞进 `generation_task` 的 JSON 列：它们属于 Agent 的"思考过程"，
+> 与"业务元数据"是两类数据，混在一起会让 `generation_task` 变成杂物间。
+> 代价是"读一次完整生成决策要查两个库" —— 可接受，因为**跨库不 JOIN** 本来就是既定铁律。
 **Redis 只做队列，不做真源**：arq 的 job 队列 + job 元数据（`_job_id` 入队去重）
 
 > ⚠️ **Redis 绝不是真源。** 任务状态、阶段、进度、结果一律落 MySQL。
@@ -239,7 +288,7 @@ backend-uv-fastapi/
 | 两个 declarative Base 不能混注册 | 见 §5 硬约束 1（最阴的坑） |
 | `create_all` 不够用 | PG 侧直接上 Alembic（长期待办里本就有这一项，一并用上） |
 
-### 3.5 web-agent 的输入块优先级与预算（**关键**）
+### 3.5 输入块优先级与预算（**关键**：MERGE 与 web-agent 是两处）
 
 五个来源**不能并列拼装** —— 否则模型收到互相矛盾的需求会随机挑一份服从。
 按优先级从高到低（冲突时上位覆盖下位）：
@@ -252,6 +301,21 @@ backend-uv-fastapi/
 | 4 | 文档 digest（内容素材 + 风格规范） | 先压缩成摘要 |
 | 5 | RAG 检索结果（二期才有内容） | 再裁 |
 | 6 | chat-agent 澄清摘要 | 最先裁 |
+
+> ⚠️ **上面这张表是 web-agent 的输入优先级，不是 MERGE 的。** 两者是不同节点、不同输入集：
+>
+> **⑪ MERGE 的输入优先级**（产出唯一的 `FinalRequirement`）：
+>
+> | 优先级 | 输入块 | 超预算裁剪顺序 |
+> |---|---|---|
+> | 1 | 用户显式要求 | **永不裁** |
+> | 2 | chat-agent 澄清摘要 | 最先裁 |
+> | 3 | 文档 digest（内容素材 + 风格规范） | 压缩成摘要 |
+> | 4 | RAG 检索结果（二期才有内容） | 再裁 |
+>
+> **为什么必须先在 MERGE 收敛成一份需求**：如果让 web-agent 直接面对四个可能互相矛盾的原始来源，
+> 它只能自己临场裁决 —— 而那个裁决既不可观测、也无法回归测试。
+> MERGE 把"冲突消解"变成一个**可评审、可单测**的独立步骤（完整流程见 §3.8）。
 
 ### 3.6 附件别名机制
 
@@ -324,6 +388,170 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
 
 **替代方案（已否决）**：工具直接写磁盘 + 接收 `user_id/task_uuid`。
 否决理由：会把 `agents/` 与存储路径耦合死，破坏"可脱离框架测试"这条既有优势。
+
+---
+
+### 3.8 端到端工作流（用户提交需求 → 拿到网页）
+
+> 这是把 §3.1~§3.7 串起来的**总流程**。实施任何阶段之前，先在这一节确认自己动的环节。
+> 2026-09-15 与用户确认。
+
+#### 3.8.1 总览
+
+```
+用户（前端）
+  │ ① POST /api/agent/chat   { session_uuid?, message, attachments[] }
+  ▼
+┌───────────────────────── FastAPI 进程 ─────────────────────────┐
+│ ② 落用户消息        → PG agent_message                          │
+│ ③ 本轮带附件？      → 上传 → 解析 → 分配别名 @docN               │
+│                       (PG generation_source + uploads/)         │
+│ ④ 装配上下文        → L1 历史回放 + @docN 展开成 digest 摘要      │
+│ ⑤ intent_router（AI 结构化输出）                                 │
+│      intent    : chat | generate                                │
+│      readiness : ready | needs_clarification                    │
+│      slots     : {site_kind, features, audience, style,         │
+│                   need_persistence}                             │
+│      missing_slots / reason                                     │
+└────────────────────────────┬────────────────────────────────────┘
+                 ┌───────────┴───────────┐
+        chat / needs_clarification   generate + ready
+                 │                       │
+                 ▼                       ▼
+   ⑥ chat-agent 回复            ⑦ 建任务(MySQL queued) + 入队(Redis)
+      写回需求草稿                        │ 202 立即返回
+      → 回到 ①（多轮）                    ▼
+                              ┌──────── arq worker 进程 ────────┐
+                              │ ⑧ ROUTING   归一化 + 完备度复核  │
+                              │ ⑨ DIGESTING 附件解析与归并       │
+                              │ ⑩ RETRIEVING RAG 判定与检索      │
+                              │ ⑪ MERGE     → FinalRequirement   │
+                              │ ⑫ PLANNING  → FilePlan           │
+                              │ ⑬ GENERATING web-agent ReAct 环  │
+                              │ ⑭ GATE      完成门禁（不过则补缺）│
+                              │ ⑮ 落盘 + 落库                    │
+                              └───────────────┬─────────────────┘
+                                              ▼
+                        前端轮询 → 签发票据 → 打开 /preview/.../index.html
+```
+
+#### 3.8.2 第一段：入口（两条路径，共用同一套 AI 判定）
+
+**入口 1 —— 对话路径 `POST /api/agent/chat`**（阶段 2 实现）
+
+| 步 | 动作 | 落位 |
+|---|---|---|
+| ① | 无 `session_uuid` → 新建会话 | PG `agent_session` |
+| ② | 落用户消息（**含 `@docN` 原文**，绝不存文件正文或磁盘路径） | PG `agent_message` |
+| ③ | 新附件 → 上传落盘 + 解析 + 分配别名 | PG `generation_source` + `uploads/{uid}/{source_uuid}/` |
+| ④ | 装配上下文：按 `session_id` 回放最近 N 轮；`@docN` 展开为 **digest 摘要**（不是全文） | 内存 |
+| ⑤ | **intent_router**（`llm_structured_client` + 结构化输出） | — |
+| ⑥a | `chat` / `needs_clarification` → **chat-agent** 产出澄清问题或建议；更新需求草稿 | PG `agent_message` + `agent_session.draft_requirement` |
+| ⑥b | `generate` + `ready` → 进入第二段 | — |
+
+**router 跑在 API 进程内**（一次 LLM 调用，约 2~5 秒）。对话场景用户本来就预期等待，
+这与 `create` 的"0.09 秒返回"不冲突 —— 那是另一条路径。
+
+**为什么要"展开成摘要"而不是塞全文**：一份页面 HTML 轻松几万 token，而 digest 只有几百字。
+这是 prompt 能同时容纳多个附件的前提，也是 §3.6 别名机制存在的意义。
+
+**入口 2 —— 直达路径 `POST /api/generation/create`**
+
+用户已经明确说"生成"，所以这里 router 的**"意图"判定没有价值，"完备度"判定才有**。
+处理方式：
+
+- 建任务（`status=running` / `stage=queued`）→ 入队 → **立即 202**（维持 0.09 秒）
+- **完备度判定挪进 worker**（⑧ ROUTING）。若判定"信息严重不足，生成必然跑偏"：
+  任务停在 `stage=clarifying` / `status=running`，`stageDetail` 写面向用户的追问，**不标 failed**
+- 用户在对话里回答后**重新入队**，带着新信息从 ⑧ 重跑
+
+> 这是真正的 **human-in-the-loop 暂停**，而不是"任务失败了"。
+> V1 用"重新入队重跑前段"实现（router + merge 都是小调用，重跑很便宜），
+> 不做 LangGraph checkpoint 断点恢复 —— 那是后续优化。
+>
+> ⚠️ 配套改动见 §阶段 2 要点：`AgentStage` 要加 `CLARIFYING`，
+> 且**僵尸回收必须跳过 `stage='clarifying'`**。
+
+#### 3.8.3 第二段：需求装配（worker 内，⑧~⑪）
+
+| 阶段 | 输入 | 处理 | 产出 |
+|---|---|---|---|
+| ⑧ ROUTING | 用户 prompt + 会话上下文 | 完备度复核；不足 → `clarifying` 暂停 | 归一化需求 |
+| ⑨ DIGESTING | 附件（若有） | 解析层（**无 LLM**）→ 理解层 map-reduce | `RequirementDigest` |
+| ⑩ RETRIEVING | 需求 | 判定是否需要个人知识库；**一期只判定，检索是桩** | `hit` / `miss` / `skipped` |
+| ⑪ MERGE | 上面全部 | 按 §3.5 的 MERGE 优先级归并 + 冲突消解 | `FinalRequirement` |
+
+`FinalRequirement` 结构（**后两个字段是关键设计**）：
+
+```
+summary        : 一段人可读的需求陈述
+slots          : {site_kind, features[], audience, style, need_persistence}
+content_points : 来自文档的内容素材
+style_spec     : 来自文档的风格规范
+constraints[]  : 硬约束
+sources[]      : [{kind: user|chat|doc|rag, ref}]   ← 证据可追溯
+uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确定性显式传给下游
+```
+
+> `uncertainty` 是刻意设计的：RAG 未命中时**绝不能沉默**，否则模型会当成"用户资料里没有"然后编。
+> 它必须一路传到 plan 与 web-agent，必要时回头追问。
+
+#### 3.8.4 第三段：规划与生成（⑫~⑮）
+
+| 阶段 | 输入 | 产出 / 关键约束 |
+|---|---|---|
+| ⑫ PLANNING | `FinalRequirement` | `FilePlan`：`difficulty` + `files[{name, role, depends_on, summary}]` + `tech_constraints` + `assets` |
+| ⑬ GENERATING | 系统提示词 + `FinalRequirement` + `FilePlan` + 工具语义 | web-agent 的 **ReAct 环**（`model ⇄ ToolNode`），写进 **per-request 虚拟文件系统** |
+| ⑭ GATE | `FilePlan.files` + store | **Python 侧**用 `store.missing(plan 声明的清单)` 判定；不过 → 定向补缺（最多 N 轮）→ 仍不过则 failed |
+| ⑮ 落盘 | store 快照 | `generated/{uid}/{task_uuid}/` + MySQL 状态 / 用量 |
+
+- ⑫ 必须落地两条：**`difficulty` 要真的映射** web-agent 的步数上限与 token 预算（否则是装饰品）；
+  文件名单要过 `safe_name` 白名单。
+- ⑬ 三条铁律：工具**永不抛异常**（失败原因作为字符串回给模型，这是感知闭环）；
+  **步数上限**由 `difficulty` 决定；**用量累加**（复用 `ModelUsage.__add__`）。
+- ⑭ **门禁必须在 Python 侧**：模型完全可能在只写了 1 个文件时说"我完成了"。
+  所以刻意**不提供** `finish` / `done` 工具。
+
+#### 3.8.5 产物落位总表（实施时的对照表）
+
+| 产物 | 存储位置 | 写入时机 | 谁消费 |
+|---|---|---|---|
+| 会话 | PG `agent_session` | 首次对话 | router / 前端 |
+| 需求草稿（slots） | PG `agent_session.draft_requirement`（**阶段 2 待加列**） | 每轮澄清后 | router / MERGE |
+| 消息 | PG `agent_message` | 每轮 | L1 历史回放 |
+| 附件与别名 | PG `generation_source` + `uploads/` | 上传时 | digest / 别名展开 |
+| `RequirementDigest` | PG `generation_source.digest` | 解析后（**可缓存，跨轮复用**） | MERGE |
+| 任务生命周期 | MySQL `generation_task` | 入队 + 每阶段 | 前端轮询 |
+| `FinalRequirement` / `FilePlan` | PG `generation_plan`（**阶段 5 用 Alembic 加**） | MERGE / PLANNING 后 | web-agent / GATE |
+| 产物文件 | `generated/{uid}/{task_uuid}/` | 循环结束后**一次性**落盘 | 预览 |
+| `AgentTrace` | `_debug_trace.jsonl` | 失败时（可选总是） | 排查 |
+| token 用量 | MySQL `generation_task` 三列 | 结束时（**失败也记**） | 前端 / 统计 |
+
+#### 3.8.6 失败与降级矩阵
+
+| 故障点 | 行为 | 是否阻塞主流程 |
+|---|---|---|
+| Redis 不可用 | 建任务后当场标 failed → 503 | 阻塞（无法执行） |
+| 附件解析失败（如扫描版 PDF） | `parse_status=failed` + 明确原因 | **不阻塞**：跳过该附件，`uncertainty` 写明 |
+| 文档 digest 失败 | 降级为"仅用正文片段" | 不阻塞 |
+| RAG 未命中 | `miss` + `uncertainty` 标注 | 不阻塞 |
+| router 调用失败 | **按路径降级**：对话路径 → `chat`；直达路径（create）→ `generate + ready` | 不阻塞 |
+| 完备度不足（`create` 入口） | 停在 `stage=clarifying`，等用户补充 | 暂停（非失败） |
+| plan 失败 | 降级为"单文件 `index.html`"启发式规划 | 不阻塞 |
+| web-agent 超步数 / 超时 | 用当前快照走 GATE；缺文件则 failed | 阻塞（但有完整 trace） |
+| GATE 不通过 | 定向补缺 N 轮 → 仍不过则 failed | 阻塞 |
+| worker 被强杀 | 任务留在 `running` → 僵尸回收标 failed | 由回收兜底 |
+
+#### 3.8.7 V1 明确不做的事（边界）
+
+1. **不做增量修改**：用户说"把主色改成蓝色"，V1 走**重新生成**，不做"基于已有产物改代码"。
+2. **不做多智能体自由对话**：agent 之间一律用**固定图 + 结构化产物**传递，
+   不让它们互相聊天（贵且不可控）。
+3. **RAG 真检索不做**：一期只做判定 + 桩 provider，二期接华为云 BGE-M3 + pgvector。
+4. **不做对话式流式输出**：先用同步返回 + 轮询，SSE 后置。
+5. **循环中途不向用户提问**：面向用户的提问一律发生在 **⑧ ROUTING 之前**（或经 `clarifying` 暂停）。
+   循环一旦开始就只允许"回到 ⑫ 重规划"或失败，不停下来等人 ——
+   见 §阶段 6 要点中的理由。
 
 ---
 
@@ -428,7 +656,7 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
   - 应用户决策，PG 侧列名统一 `snake_case`；时间列用 `timestamptz`（避免 naive 时间被按会话时区解释）；
     `is_delete` 沿用 0/1 与 MySQL 保持一致，让两库查询写法统一。
 
-### 阶段 2｜意图路由 + chat-agent + 对话持久化 + 别名机制
+### 阶段 2｜意图路由 + chat-agent + 对话持久化 + 别名机制 —— ✅ 已完成（2026-09-15）
 - **产出**：`agents/router/intent_router.py`、`agents/chat/chat_agent.py`、
   `app/prompts/intent_router_system.md`、`app/prompts/chat_agent_system.md`、
   `app/utils/agent/alias.py`、`POST /api/agent/chat`、`agents/state.py`
@@ -441,22 +669,52 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
     | `generate` | `needs_clarification` | → chat-agent **带着生成目标**追问槽位 |
     | `generate` | `ready` | → 直接进需求装配流水线 |
 
-  - **规则优先、LLM 兜底**：有附件 / 命中生成动词 / 会话里已有已确认需求 → 规则直接判；
-    都不命中才走 `llm_structured_client` 结构化输出。既省钱又稳。
+  - **意图与完备度全部交给 AI 结构化判定**（2026-09-15 决策，覆盖原"规则优先"设计）：
+    不再做"关键词命中就跳过大模型"的规则前置 —— 规则判据难维护，且遇到反讽 / 隐含意图必然判错。
+    统一走 `llm_structured_client` 结构化输出；代价是每轮一次调用，换来"判定口径只有一处"。
   - **Router 每轮都跑**，不是只在第一轮 —— 多轮里 `chat → generate` 是常态。
-  - **槽位显式枚举**：`site_kind` / 核心功能 / 目标用户 / 风格 / 是否需数据持久化；
+  - **槽位显式枚举**（暂定 5 项，字段名即 API 契约）：`site_kind` / `features`（核心功能列表）/
+    `audience`（目标用户）/ `style`（风格）/ `need_persistence`（是否需数据持久化）；
     缺关键槽位 → `needs_clarification`。
+    缺关键槽位（`site_kind` / `features`）→ `needs_clarification`；其余槽位缺失只记入 `uncertainty`，不阻塞。
   - L1 **历史回放**：按 `session_id` 顺序读消息注入上下文（否则用户澄清完、下一轮拿不到）。
+  - ⚠️ **配套改动（human-in-the-loop 暂停）**：`create` 入口也过 AI 完备度判定，
+    信息不足时任务停在 `stage=clarifying` / `status=running`（**不标 failed**），等用户在会话里补充后重新入队。
+    因此需要两处改动：
+    1. `AgentStage` 增加 `CLARIFYING`（阶段 0 的枚举里没有）；
+    2. **僵尸回收必须跳过 `stage='clarifying'`** —— 否则用户思考超过宽限期，任务会被回收误标成 failed。
+       这需要改 `GenerationTaskRepository.list_stale_running()` 的过滤条件。
 - **验收**：
   - 三类输入（纯咨询 / 模糊需求 / 明确需求）路由正确
   - **纯咨询不产生任何生成任务**（用 DB 断言，不是看日志）
   - `a@b.com` **不被误展开**；`@doc1` 正确展开为摘要；失效别名回放不报错
   - 多轮对话落 PG 可完整回放
+- **实际交付与偏差（2026-09-15）**：
+  - 交付：`app/agents/state.py`（`RequirementSlots` / `RouterDecision` / `RouterResult` / `ChatResult`）、
+    `app/agents/router/intent_router.py`、`app/agents/chat/chat_agent.py`、
+    `app/prompts/intent_router_system.md`、`app/prompts/chat_agent_system.md`、
+    `app/utils/agent/alias.py`、`app/repositories/agent/`（session / message）、
+    `app/services/agent_chat_service.py`、`app/api/agent.py`、`app/schemas/agent_schemas.py`、
+    `app/utils/utils_check/check_agent_chat.py`、Alembic 迁移 `eac80e932e7f`（+`draft_requirement`）
+  - 配套改动（§阶段 2 要点里预告的两条）：`AgentStage` 增加 `CLARIFYING`；
+    `list_stale_running()` 增加 `exclude_stages` 参数，`recover_zombies()` 传入 `clarifying`
+  - **偏差 1：`ready` 时不调用 chat-agent**。此时确认摘要的内容由槽位唯一确定，
+    模型发挥不了额外价值 —— 省一次调用、少一份不确定性（`_confirmation_reply` 用模板拼）。
+  - **偏差 2：`generate + ready` 之外的路径才调 chat-agent**，即 `intent=chat` 与
+    `generate + needs_clarification` 两种；这与 §3.8.2 的 ⑥a/⑥b 分支一致。
+  - **偏差 3：router 失败时的降级方向是"路径相关"的**（见 §3.8.6 的修订）：
+    对话路径降级为 `chat`（意图不明时继续对话比擅自生成安全），
+    直达路径降级为 `generate + ready`（那里用户已经明确点了生成）。
+    已在 `route(..., on_failure_intent=...)` 上开出口子。
+  - **修掉一个真 bug**：`_SAFE_ALIAS_RE` 漏了捕获组，而 `parse_alias_index()` 用 `group(1)`
+    —— 冒烟测试第一轮就抓到（`IndexError`），随后补上测试。
 
 ### 阶段 3｜文档解析
 - **产出**：`app/utils/doc/pdf_parser.py`、`html_parser.py`（**无 LLM**）、
   `app/agents/source/doc_digest_agent.py`、`POST /api/agent/source/upload`、
   `app/services/source_service.py`、上传目录 `uploads/{user_id}/`
+  - 同时实现（但到阶段 6 才入图）：`app/agents/merge/requirement_merge.py` ——
+    对话摘要 + 四来源冲突消解 → `FinalRequirement`（见 §3.2.1 的划界理由）
 - **要点**：
   - **解析与理解分两层**：解析层无 LLM 可单测 → 理解层出 `RequirementDigest` 结构化结果
   - PDF：按页抽文本；**扫描版（无文本层）必须明确报错**，不能静默产出空需求让模型瞎编
@@ -495,6 +753,13 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
   `app/prompts/web_agent_system.md`（**去掉交付清单**，只留角色 + 工具语义）、统一入口接口
 - **要点**：
   - 手写 `StateGraph`：`model`（bind_tools）→ 条件边（有 `tool_calls`？）→ `ToolNode` → 回 `model`
+  - ⚠️ **循环中途不向用户提问**（2026-09-15 决策）：一旦进入循环，只允许两种出口 ——
+    **回到 ⑫ 重规划** 或 **失败**，不停下来等人。理由：
+    - 循环中途插人，Harness 复杂度陡增：几万 token 的上下文要 checkpoint 持久化、
+      要处理"用户永远不回"、还要与 worker 超时 / 僵尸回收 / 并发抢跑协调；
+    - 而"信息不足"这件事在 **⑧ ROUTING 就能判定** —— 跑到一半才发现缺信息，
+      说明前段判定没做好，应当回头加强 ROUTING，而不是在循环里开一个逃生口。
+    - 真正的 LangGraph checkpointer 中断恢复留作后续优化。
   - 每次生成**新建 store + 新建图**，杜绝跨请求状态残留（§3.7 铁律）
   - **完成判定权在 Python 侧**，模型说"我写完了"不算数
   - 工具**永不抛异常**，失败原因作为**字符串返回值**交给模型 —— 感知闭环的关键
@@ -576,6 +841,10 @@ agent_message.attachments = [{"alias":"@doc1","source_uuid":"…","role":"style"
 | 2026-09-15 | 阶段 0：僵尸回收（真实数据） | worker 启动 | 历史僵尸记录 id=5（createTime 2026-09-14 18:30）被回收：`updateTime` 刷新为 2026-09-15 14:45:47，`errorMsg` 写入"任务超时或执行进程中断，已自动标记为失败" | **通过** |
 | 2026-09-15 | 阶段 1：跨库隔离（**实库验收**） | MySQL 会话查 `agent_session` / PG 会话查 `generation_task` | 两者均按预期报 `ProgrammingError`；而 PG 查自己的 `generation_source` **正常可查** | **通过** —— 后者排除了"表不存在"造成的假阳性，证明运行时确实没串库 |
 | 2026-09-15 | 阶段 1：`write_file` 的自由对象参数能否被 DeepSeek 接受（真实调用） | `bind_tools` + "请交付一个只有 index.html 的最小页面" | `finish_reason=tool_calls`，返回 `write_file({"files": {"index.html": "<!DOCTYPE html>…"}})`，仅 337 output tokens | **通过** —— `dict[str, str]` 这个最不确定的假设成立，`tools.py` 的主要风险排除 |
+| 2026-09-15 | 阶段 2：三类输入的意图路由（真实模型） | 纯咨询 / 模糊需求（"你看着办"）/ 明确需求 | 分别得到 `chat` / `generate+needs_clarification` / `generate+ready`（5 个槽位全中，`need_persistence=True` 三态正确）；单次 1.4~2.0s，`reasoning=0` 证实用的是非思考客户端 | **通过**。模型的 `reason` 甚至正确区分了"授权决定具体方案"与"连主题都没定" |
+| 2026-09-15 | 阶段 2：槽位跨轮累积（真实模型） | 已有 `site_kind=单页展示, features=[添加待办]`，再补"界面要极简一点，白底就行" | 合并结果保留旧槽位，并新抽取到 `style=极简白底` | **通过** —— 证明"新抽取为空时不覆盖旧值"的合并语义有效 |
+| 2026-09-15 | 阶段 2：多轮对话落库与回放（真实 HTTP + PG） | 两轮对话（模糊 → 补齐） | 4 条消息、角色序列 `user/assistant/user/assistant`、顺序正确；会话草稿 summary 正确；`ready_to_generate` 由 false 变 true | **通过** |
+| ✅ | 阶段 2：意图路由 + chat-agent —— **已完成（2026-09-15）** | — | — | — |
 | ✅ | 阶段 0：异步骨架 —— **已完成（2026-09-15）**，见上方两条实测记录 | — | — | — |
 | | 阶段 2：意图路由正确率（三类输入） | | | |
 | | 阶段 3：PDF / HTML 解析质量 | | | |

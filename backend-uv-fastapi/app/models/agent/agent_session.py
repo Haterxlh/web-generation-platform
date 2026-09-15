@@ -4,8 +4,10 @@
 #    否则 create_all 会「在错误的库里建表且不报错」。详见 app/core/pg_db.py 顶部注释。
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import BigInteger, DateTime, SmallInteger, String, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.pg_db import PgBase
@@ -45,6 +47,15 @@ class AgentSession(PgBase):
 
     current_stage: Mapped[str | None] = mapped_column(
         String(16), comment="本会话最近一次生成的 Agent 阶段(取值同 agents/stages.py)"
+    )
+
+    # 需求草稿：{slots: {...}, summary: "...", updated_at: "..."}（结构见 agents/state.py 的 RequirementDraft）
+    #
+    # 为什么放会话行里，而不是"读最后一条带 slots 的消息"：
+    # 它是**会话状态**，每轮都要读写；放这里一次主键查询就拿到，
+    # 不必按 session 扫消息表再挑最新的一条。
+    draft_requirement: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, comment="需求草稿(slots + 一句话摘要)"
     )
 
     # 时间列统一用 timestamptz（PG 侧的惯例）：避免"这串时间到底是本地时间还是 UTC"的歧义。

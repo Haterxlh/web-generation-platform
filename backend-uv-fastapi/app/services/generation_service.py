@@ -237,12 +237,16 @@ class GenerationService:
             db: 数据库会话。
             grace_seconds: 宽限期（秒）。updateTime 早于「现在 - 宽限期」才判定为孤儿
                 （多 worker 场景下，B 启动时 A 可能正在正常跑任务，不设宽限会误杀）。
+                另外会**跳过 `stage='clarifying'`**：那是"正在等用户补充信息"的暂停态，
+                它没有在跑，但也不是孤儿 —— 用户思考多久都不该被回收成 failed。
 
         Returns:
             被回收的任务条数（0 表示没有僵尸）。
         """
         deadline = datetime.now() - timedelta(seconds=grace_seconds)
-        zombies = GenerationTaskRepository.list_stale_running(db, deadline)
+        zombies = GenerationTaskRepository.list_stale_running(
+            db, deadline, exclude_stages=(AgentStage.CLARIFYING.value,)
+        )
         now = datetime.now()
         for task in zombies:
             task.status = "failed"
@@ -280,8 +284,9 @@ class GenerationService:
         """
         task.stage = stage.value
         if stage is not AgentStage.FAILED:
-            task.progress = STAGE_PROGRESS[stage]
-        # FAILED 刻意不改 progress：保留"失败在第几 %"，比归零更有信息量
+            task.progress = STAGE_PROGRESS.get(stage, task.progress)
+        # 用 .get() 而不是 []：FAILED 与 CLARIFYING 不在进度表里，此时**保持原进度** ——
+        # 失败保留"死在第几 %"、澄清保留"暂停在第几 %"，都比归零有信息量
         if detail is not None:
             task.stage_detail = detail[:255]
         task.update_time = datetime.now()

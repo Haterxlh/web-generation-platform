@@ -63,6 +63,7 @@ class FakeRepo:
     stale: list[GenerationTask] = []
     updated: list[GenerationTask] = []
     created: list[GenerationTask] = []
+    last_exclude_stages: tuple[str, ...] = ()
 
     @classmethod
     def reset(cls) -> None:
@@ -70,6 +71,7 @@ class FakeRepo:
         cls.stale = []
         cls.updated = []
         cls.created = []
+        cls.last_exclude_stages = ()
 
     @staticmethod
     def create(db: FakeDb, task: GenerationTask) -> GenerationTask:
@@ -89,7 +91,11 @@ class FakeRepo:
         return None
 
     @staticmethod
-    def list_stale_running(db: FakeDb, deadline: datetime) -> list[GenerationTask]:
+    def list_stale_running(
+        db: FakeDb, deadline: datetime, exclude_stages: tuple[str, ...] = ()
+    ) -> list[GenerationTask]:
+        # 记下 service 传进来的排除项，供"僵尸回收要跳过 clarifying"的用例断言
+        FakeRepo.last_exclude_stages = tuple(exclude_stages)
         return list(FakeRepo.stale)
 
 
@@ -173,6 +179,18 @@ def test_stage_text_is_safe_for_unknown_value() -> None:
     """脏数据不能把接口搞 500 —— 未知值与空值都要安全返回。"""
     assert stage_text("bogus") == "bogus"
     assert stage_text(None) == ""
+
+
+def test_clarifying_stage_has_text_but_no_progress() -> None:
+    """`clarifying` 要有中文文案，但**不在进度表里**。
+
+    不在进度表里意味着推进到该阶段时保持原进度（"暂停在第几 %"比归零有信息量），
+    这条约定由 `_set_stage` 的 `.get()` 实现。
+    """
+    from app.agents.stages import STAGE_PROGRESS
+
+    assert stage_text(AgentStage.CLARIFYING.value) == "等待你补充信息"
+    assert AgentStage.CLARIFYING not in STAGE_PROGRESS
 
 
 # --------------------------------------------------------------------------
@@ -325,6 +343,20 @@ def test_recover_zombies_noop_when_none() -> None:
 
     assert count == 0
     assert FakeDbHolder.db.commits == 0
+
+
+def test_recover_zombies_skips_clarifying_stage() -> None:
+    """僵尸回收必须**跳过 `clarifying`**。
+
+    那是"正在等用户补充信息"的暂停态（human-in-the-loop）：任务没有在跑，
+    但也**不是孤儿** —— 用户思考多久都不该被回收标成失败。
+    """
+    FakeRepo.stale = []
+    gs.GenerationService.recover_zombies(FakeDbHolder.db, grace_seconds=300)
+
+    assert AgentStage.CLARIFYING.value in FakeRepo.last_exclude_stages, (
+        "recover_zombies 必须把 clarifying 传给 repository 排除，否则用户一思考任务就被判失败"
+    )
 
 
 # --------------------------------------------------------------------------

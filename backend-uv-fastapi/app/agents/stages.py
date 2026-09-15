@@ -23,7 +23,8 @@ class AgentStage(StrEnum):
     """
 
     QUEUED = "queued"          # 已入队，等 worker 取（阶段 0 之后由 arq 负责）
-    ROUTING = "routing"        # 意图识别（阶段 2 启用）
+    ROUTING = "routing"        # 意图识别 / 完备度判定（阶段 2 启用）
+    CLARIFYING = "clarifying"  # 信息不足，**暂停等人补充**（human-in-the-loop，非终态）
     DIGESTING = "digesting"    # 文档解析与需求归并（阶段 3 启用）
     RETRIEVING = "retrieving"  # 个人 RAG 检索（阶段 4 启用）
     PLANNING = "planning"      # 规划（阶段 5 启用）
@@ -36,6 +37,7 @@ class AgentStage(StrEnum):
 STAGE_TEXT: dict[AgentStage, str] = {
     AgentStage.QUEUED: "排队中",
     AgentStage.ROUTING: "正在理解你的需求",
+    AgentStage.CLARIFYING: "等待你补充信息",
     AgentStage.DIGESTING: "正在解析文档",
     AgentStage.RETRIEVING: "正在检索你的资料",
     AgentStage.PLANNING: "正在规划文件结构",
@@ -45,8 +47,10 @@ STAGE_TEXT: dict[AgentStage, str] = {
 }
 
 # 阶段 → 进度百分比。
-# 刻意只给"有意义的阶段"定进度：FAILED 不在表内 ——
-# 失败时应当**保留"失败在第几 %"**，归零反而丢失信息（见 generation_service._set_stage）。
+# 刻意只给"有意义的阶段"定进度：FAILED 与 CLARIFYING 都不在表内 ——
+# - 失败时应当**保留"失败在第几 %"**，归零反而丢失信息；
+# - 等待用户补充时**保留"暂停在第几 %"**，同样是信息。
+# 不在表内的阶段由 generation_service._set_stage 用 `.get()` 保持原进度（见那里的注释）。
 STAGE_PROGRESS: dict[AgentStage, int] = {
     AgentStage.QUEUED: 0,
     AgentStage.ROUTING: 10,

@@ -2,6 +2,7 @@
 # 职责：只做数据库操作（CRUD），不写业务规则
 # 与 user_repository.py 保持一致：所有查询都带 is_delete == 0（逻辑删除）
 
+from collections.abc import Sequence
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -109,7 +110,9 @@ class GenerationTaskRepository:
         return db.scalar(stmt) or 0
 
     @staticmethod
-    def list_stale_running(db: Session, deadline: datetime) -> list[GenerationTask]:
+    def list_stale_running(
+        db: Session, deadline: datetime, exclude_stages: Sequence[str] = ()
+    ) -> list[GenerationTask]:
         """列出"仍标记为 running，但最后更新时间早于 deadline"的任务（僵尸回收用）。
 
         为什么要靠 updateTime 判断陈旧：worker 进程被强杀时来不及写任何终态，
@@ -120,6 +123,7 @@ class GenerationTaskRepository:
         Args:
             db: 数据库会话。
             deadline: 时间阈值；updateTime 早于它的才算僵尸。
+            exclude_stages: 不参与回收的阶段（如 `clarifying`：等用户补充信息，不是孤儿）。
 
         Returns:
             僵尸任务列表（可能为空）。
@@ -127,6 +131,11 @@ class GenerationTaskRepository:
         stmt = select(GenerationTask).where(
             GenerationTask.status == "running",
             GenerationTask.is_delete == 0,
+            # 排除"正在等用户补充信息"的阶段（由调用方传入，本层不认识 AgentStage —— 
+            # repositories 是最底层，不该依赖 agents 的枚举）。
+            # not_in([]) 在 SQLAlchemy 2.0 里渲染为永真（NOT IN (NULL) OR (1 = 1)），
+            # 所以不传排除项时语义就是"不排除任何阶段"，不必写分支。
+            GenerationTask.stage.not_in(list(exclude_stages)),
             GenerationTask.update_time < deadline,
         )
         return list(db.scalars(stmt))

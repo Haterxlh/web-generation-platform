@@ -112,3 +112,35 @@ uv run python -m app.utils.utils_check.check_pg
 
 > 检查四项：PG 连通与迁移状态 / MySQL 既有链路未受影响 /
 > 两个 declarative Base 静态隔离 / **拿错库的会话查表必须报错**。
+
+### 6. Agent 对话（阶段 2 起）
+
+6.1 意图路由与多轮对话自检
+
+```shell
+cd ./backend-uv-fastapi
+uv run python -m app.utils.utils_check.check_agent_chat
+```
+
+> ⚠️ 本脚本会**真实调用大模型**（按 token 计费）。
+> 第一段验证三类输入的意图路由（不连库）；第二段走真实 HTTP 验证多轮对话落库与回放
+> （需要 `uv run fastapi dev` 在跑，否则自动跳过）。
+
+6.2 手工试用对话接口
+
+```shell
+# 先注册登录拿 token，再：
+curl -X POST http://127.0.0.1:8000/api/agent/chat \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"message":"帮我做个网站吧"}'
+
+# 带上上一轮返回的 session_uuid 继续聊：
+curl -X POST http://127.0.0.1:8000/api/agent/chat \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"session_uuid":"<uuid>","message":"做个单页待办清单，能添加和删除"}'
+
+# 查看会话详情与历史消息（回放）：
+curl http://127.0.0.1:8000/api/agent/session/<uuid> -H "Authorization: Bearer <token>"
+```
+
+> 也可以直接打开 http://127.0.0.1:8000/docs 里的「Agent 对话」分组试用。

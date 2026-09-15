@@ -148,7 +148,7 @@
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
 ### 模块：Agent 框架（阶段 0 异步骨架 / 阶段 1 双数据源基座）
-- **状态**：进行中（阶段 0、阶段 1 已完成；阶段 2~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
+- **状态**：进行中（阶段 0、1、2 已完成；阶段 3~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
 - **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
   并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示
 - **已交付内容**：
@@ -193,6 +193,12 @@
     **跨库查询必须失败**（MySQL 查 `agent_session` 与 PG 查 `generation_task` 均按预期 `ProgrammingError`，
     而 PG 查自己的表正常 —— 排除"表不存在"的假阳性）；
     真实模型探针确认 `write_file` 的 `dict[str, str]` schema 被 DeepSeek 接受（`finish_reason=tool_calls`，337 tokens）
+  - **阶段 2（2026-09-15）**：`pytest` **132 个用例全绿**（65 → 新增 67）；
+    `check_agent_chat` 三项全通过 ——
+    ① **三类输入路由正确**（纯咨询 → `chat`；"你看着办" → `generate+needs_clarification`；
+    明确需求 → `generate+ready`，5 个槽位全中，单次 1.4~2.0s、`reasoning=0` 证实非思考客户端）
+    ② **槽位跨轮累积**（旧槽位保住 + 新抽取的 style 合并进来）
+    ③ **多轮对话落库与回放**（真实 HTTP + PG：4 条消息、角色序列与顺序正确、草稿 summary 正确）
 - **本轮修复（2026-09-15）**：
   1. **`docker-compose.yml` 的 PG 数据卷路径**（用户实测发现并修正）：
      PG 18+ 镜像期望挂载整个 `/var/lib/postgresql`，并在其下自建 `18/docker` 子目录存放数据；
@@ -221,6 +227,26 @@
   - 自检与测试：`app/utils/utils_check/check_pg.py`、`tests/test_web_tools.py`、
     `tests/test_pg_metadata_isolation.py`；`app/utils/db/create_all_table.py` 加了"别 import PG 模型"的警告
   - **刻意推迟**：`StageBudget` → 阶段 5（唯一消费者是难度分级）；`app/repositories/agent/` → 阶段 2（首个消费者是 chat 会话）
+- **阶段 2 交付（2026-09-15）**：
+  - **意图路由**：`app/agents/router/intent_router.py` —— 全 AI 结构化判定（intent / readiness / slots /
+    missing_slots / ask_hint / reason），不做规则前置；**Python 侧硬兜底**（`apply_readiness_gate`：
+    模型说 ready 但必备槽位为空 → 强制转需澄清）
+  - **澄清对话**：`app/agents/chat/chat_agent.py` + 两个 prompt —— chat-agent **不抽取槽位**（只负责说话），
+    与 router 职责分离，因此两者可各自评测与迭代
+  - **别名机制**：`app/utils/agent/alias.py`（纯函数）—— 正则带前后边界，**邮箱不会被误判成附件引用**；
+    未注册的 `@xxx` 原样保留；失效附件展开成"已失效"而不阻断历史回放；
+    未解析的附件显式渲染成"尚未解析"（不静默省略）
+  - **结构化契约**：`app/agents/state.py` —— `RequirementSlots`（`need_persistence` 用 `bool|None` 三态，
+    避免"没提"被当成"不需要"）、`RouterDecision`、`RouterResult`、`ChatResult`
+  - **对话编排与接口**：`app/services/agent_chat_service.py`、`app/api/agent.py`（`POST /api/agent/chat`、
+    `GET /api/agent/session/{uuid}`）、`app/schemas/agent_schemas.py`；
+    数据源是 **PG**（注入 `get_pg_db`，传错 session 会直接 ProgrammingError）
+  - **配套改动**：`AgentStage` 增加 `CLARIFYING`（human-in-the-loop 暂停态）；
+    `list_stale_running()` 增加 `exclude_stages`，`recover_zombies()` 传入 `clarifying`
+    —— 否则用户思考超过宽限期，暂停中的任务会被僵尸回收误判失败
+  - **Alembic 迁移 `eac80e932e7f`**：给 `agent_session` 加 `draft_requirement`（JSONB 需求草稿）
+  - **决策**：`ready` 时不调 chat-agent（确认摘要由槽位唯一确定，省一次调用）；
+    router 失败降级**按路径不同**（对话路径 → chat，直达路径 → generate+ready）
 - **待办与遗留**：
   - ✅ **`npm run lint` / `tsc -b` / `npm run build` 已于 2026-09-15 全部通过**；此前 2 个 `react-hooks/set-state-in-effect` 报错（位于
     `hooks/AuthProvider.tsx` 与 `pages/Projects/ProjectsPage.tsx`）已修复，详见上方"本轮修复（2026-09-15）"
@@ -240,9 +266,11 @@
 - `app/utils/` 按用途分子包（`db` / `jwt` / `weg_gen` / `utils_check`），不再平铺新文件
 
 ## 3. 下一步计划（按优先级）
-- [x] **Agent 框架阶段 1**（已完成 2026-09-15，见上方模块进度）
-- [ ] **Agent 框架阶段 2**：意图路由 + chat-agent + 对话持久化 + 别名机制
-      （`intent_router` / `chat_agent`、`utils/agent/alias.py`、`POST /api/agent/chat`、`repositories/agent/`）（归属：Agent 框架）
+- [x] **Agent 框架阶段 2**（已完成 2026-09-15，见上方模块进度）
+- [ ] **Agent 框架阶段 3**：文档解析 —— `utils/doc/pdf_parser.py` / `html_parser.py`（**无 LLM**）、
+      `digest-agent`（**仅文件** → `RequirementDigest`，含 content/style/both 判定）、
+      `merge`（对话摘要 + 四来源冲突消解 → `FinalRequirement`）、`POST /api/agent/source/upload`
+      （阶段 3 实现、阶段 6 入图）（归属：Agent 框架）
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
@@ -268,6 +296,17 @@
   `agents/web/tools.py`（write/read/list，永不抛异常）、`agents/common.py` 的 `AgentTrace`；
   新增 `check_pg.py` 与 42 个离线用例（共 65 个）；`file_writer._safe_name` 提升为公开 `safe_name`；
   踩到并记录两个坑：**PG 18 数据卷路径**、**`alembic.ini` 必须纯 ASCII（locale 编码陷阱）**
+- **2026-09-15（Agent 框架阶段 2）**：落地**意图路由 + 澄清对话** ——
+  `agents/router/intent_router.py`（全 AI 结构化判定 + Python 侧 `apply_readiness_gate` 硬兜底）、
+  `agents/chat/chat_agent.py`（只负责说话、不抽取槽位，与 router 职责分离）、
+  `agents/state.py`（`RequirementSlots` 的 `need_persistence` 用三态 `bool|None`）、
+  `utils/agent/alias.py`（别名正则带前后边界，邮箱不被误判；未解析附件显式占位）、
+  `repositories/agent/`（PG 侧 session / message）、`services/agent_chat_service.py`、
+  `api/agent.py`（`POST /api/agent/chat`、`GET /api/agent/session/{uuid}`）、
+  Alembic 迁移 `eac80e932e7f`（`agent_session.draft_requirement`）；
+  配套：`AgentStage` 增加 `CLARIFYING`，僵尸回收增加 `exclude_stages` 以跳过暂停态；
+  新增 `check_agent_chat.py` 与 67 个离线用例（共 132 个）；
+  修掉一个真 bug：`_SAFE_ALIAS_RE` 漏捕获组导致 `parse_alias_index` IndexError
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）
