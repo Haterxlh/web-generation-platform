@@ -17,7 +17,8 @@ class GenerateRequest(BaseModel):
     gen_type: Literal["single", "multi", "agent"] = Field(
         default="single",
         description=(
-            "生成类型：single=单个 HTML 文件；multi=html+css+js 多文件；"
+            "生成类型：single=单个 HTML 文件（单页极速路径）；"
+            "multi=html+css+js 多文件（**阶段 7 已退役**，接口保留仅为兼容历史调用，勿在新代码中使用）；"
             "agent=Agent 流水线（意图识别→附件理解→检索判定→需求归并→规划→工具调用生成→门禁）"
         ),
     )

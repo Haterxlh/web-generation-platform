@@ -1,0 +1,463 @@
+{
+  "meta": {
+    "created_at": "20260915_222128",
+    "runs_per_combo": 1,
+    "needs": [
+      {
+        "need_id": "r1",
+        "title": "简单：单页待办清单",
+        "prompt": "做一个极简的待办清单页面，可以添加、勾选完成和删除条目。",
+        "expected_min_files": 1,
+        "expected_note": "单文件即可"
+      },
+      {
+        "need_id": "r2",
+        "title": "中等：本地记账本（localStorage）",
+        "prompt": "做一个本地记账本页面：能记录收入/支出条目（金额、分类、备注、日期），按月份汇总总收入、总支出和结余，数据存在浏览器 localStorage 里，刷新不丢。",
+        "expected_min_files": 3,
+        "expected_note": "预期 html+css+js 三件套"
+      },
+      {
+        "need_id": "r3",
+        "title": "复杂：企业官网四页 + 数据文件",
+        "prompt": "做一个企业官网，包含首页、产品页、关于我们、联系我们四个页面，产品列表要能从一个数据文件里读取并渲染，整体风格简洁专业。",
+        "expected_min_files": 4,
+        "expected_note": "预期 4 个页面 + 数据文件"
+      }
+    ],
+    "modes": [
+      "single",
+      "multi",
+      "agent"
+    ],
+    "note": "按出厂配置对照，不人为拉平思考/非思考客户端差异"
+  },
+  "rows": [
+    {
+      "need_id": "r1",
+      "mode": "single",
+      "attempt": 1,
+      "task_uuid": "0b587d24b87e4a47aef21fb7f7271658",
+      "submit_seconds": 0.06929820000368636,
+      "e2e_seconds": 39.2,
+      "status": "success",
+      "stage": "done",
+      "duration_ms": 37797,
+      "input_tokens": 497,
+      "output_tokens": 10871,
+      "reasoning_tokens": 6498,
+      "file_list": [
+        "index.html"
+      ],
+      "file_sizes": {
+        "index.html": 15450
+      },
+      "integrity_ok": true,
+      "integrity_failures": [],
+      "missing_refs": [],
+      "scope_ok": true,
+      "preview_status": 200,
+      "preview_bytes": 14501,
+      "stage_track": [
+        "running/generating@70",
+        "success/done@100"
+      ],
+      "error_msg": null,
+      "plan": null
+    },
+    {
+      "need_id": "r1",
+      "mode": "multi",
+      "attempt": 1,
+      "task_uuid": "5cef28dbe36c4bdd9a7bbc1d1d250471",
+      "submit_seconds": 0.08299049999914132,
+      "e2e_seconds": 9.1,
+      "status": "failed",
+      "stage": "failed",
+      "duration_ms": 7502,
+      "input_tokens": 2001,
+      "output_tokens": 1515,
+      "reasoning_tokens": 0,
+      "file_list": [],
+      "file_sizes": {},
+      "integrity_ok": false,
+      "integrity_failures": [
+        "没有 result_dir（产物未落盘）"
+      ],
+      "missing_refs": [],
+      "scope_ok": false,
+      "preview_status": null,
+      "preview_bytes": 0,
+      "stage_track": [
+        "running/generating@70",
+        "failed/failed@70"
+      ],
+      "error_msg": "多文件生成失败（已尝试 2 次）：['上一次回答只给出了 index.html，缺少 style.css、script.js。这次必须把 index.html、style.css、script.js 三个代码块全部完整输出。']",
+      "plan": null
+    },
+    {
+      "need_id": "r1",
+      "mode": "agent",
+      "attempt": 1,
+      "task_uuid": "7539b557f9b14da8b1c2e7c169c8f706",
+      "submit_seconds": 0.1420737000007648,
+      "e2e_seconds": 19.6,
+      "status": "success",
+      "stage": "done",
+      "duration_ms": 17011,
+      "input_tokens": 11421,
+      "output_tokens": 3333,
+      "reasoning_tokens": 13,
+      "file_list": [
+        "index.html"
+      ],
+      "file_sizes": {
+        "index.html": 6249
+      },
+      "integrity_ok": true,
+      "integrity_failures": [],
+      "missing_refs": [],
+      "scope_ok": true,
+      "preview_status": 200,
+      "preview_bytes": 6121,
+      "stage_track": [
+        "running/routing@10",
+        "running/retrieving@40",
+        "running/planning@55",
+        "running/generating@70",
+        "running/done@100",
+        "success/done@100"
+      ],
+      "error_msg": null,
+      "plan": {
+        "difficulty_declared": "easy",
+        "difficulty": "easy",
+        "planned_file_count": 1,
+        "budget_steps": 6,
+        "budget_output_tokens": 12000,
+        "validation_warnings": [],
+        "actual_steps": 2,
+        "actual_file_count": 1,
+        "outcome_status": "success",
+        "entry_file": "index.html",
+        "planned_files": [
+          "index.html"
+        ]
+      }
+    },
+    {
+      "need_id": "r2",
+      "mode": "single",
+      "attempt": 1,
+      "task_uuid": "9a6a589bfacc408dbc199d2708cefd9f",
+      "submit_seconds": 1.0805504000018118,
+      "e2e_seconds": 58.8,
+      "status": "success",
+      "stage": "done",
+      "duration_ms": 56755,
+      "input_tokens": 521,
+      "output_tokens": 17403,
+      "reasoning_tokens": 9012,
+      "file_list": [
+        "index.html"
+      ],
+      "file_sizes": {
+        "index.html": 28114
+      },
+      "integrity_ok": true,
+      "integrity_failures": [],
+      "missing_refs": [],
+      "scope_ok": false,
+      "preview_status": 200,
+      "preview_bytes": 26814,
+      "stage_track": [
+        "running/generating@70",
+        "success/done@100"
+      ],
+      "error_msg": null,
+      "plan": null
+    },
+    {
+      "need_id": "r2",
+      "mode": "multi",
+      "attempt": 1,
+      "task_uuid": "20170667974f4b2eb2d4e6ae3b158960",
+      "submit_seconds": 0.07891739999467973,
+      "e2e_seconds": 25.6,
+      "status": "success",
+      "stage": "done",
+      "duration_ms": 23454,
+      "input_tokens": 2193,
+      "output_tokens": 7373,
+      "reasoning_tokens": 0,
+      "file_list": [
+        "index.html",
+        "script.js",
+        "style.css"
+      ],
+      "file_sizes": {
+        "index.html": 3858,
+        "script.js": 8929,
+        "style.css": 6064
+      },
+      "integrity_ok": true,
+      "integrity_failures": [],
+      "missing_refs": [],
+      "scope_ok": true,
+      "preview_status": 200,
+      "preview_bytes": 3500,
+      "stage_track": [
+        "running/generating@70",
+        "success/done@100"
+      ],
+      "error_msg": null,
+      "plan": null
+    },
+    {
+      "need_id": "r2",
+      "mode": "agent",
+      "attempt": 1,
+      "task_uuid": "cfb701480794473288e269c527183da4",
+      "submit_seconds": 0.08360369999718387,
+      "e2e_seconds": 54.3,
+      "status": "success",
+      "stage": "done",
+      "duration_ms": 52975,
+      "input_tokens": 54504,
+      "output_tokens": 15819,
+      "reasoning_tokens": 2769,
+      "file_list": [
+        "index.html",
+        "script.js",
+        "style.css"
+      ],
+      "file_sizes": {
+        "index.html": 3332,
+        "script.js": 11800,
+        "style.css": 8970
+      },
+      "integrity_ok": true,
+      "integrity_failures": [],
+      "missing_refs": [],
+      "scope_ok": true,
+      "preview_status": 200,
+      "preview_bytes": 3018,
+      "stage_track": [
+        "running/routing@10",
+        "running/planning@55",
+        "running/generating@70",
+        "success/done@100"
+      ],
+      "error_msg": null,
+      "plan": {
+        "difficulty_declared": "medium",
+        "difficulty": "medium",
+        "planned_file_count": 3,
+        "budget_steps": 12,
+        "budget_output_tokens": 40000,
+        "validation_warnings": [],
+        "actual_steps": 4,
+        "actual_file_count": 3,
+        "outcome_status": "success",
+        "entry_file": "index.html",
+        "planned_files": [
+          "index.html",
+          "style.css",
+          "script.js"
+        ]
+      }
+    },
+    {
+      "need_id": "r3",
+      "mode": "single",
+      "attempt": 1,
+      "task_uuid": "2ee2de9b0d4c42a78f527516ea11b124",
+      "submit_seconds": 0.3628806999986409,
+      "e2e_seconds": 81.4,
+      "status": "success",
+      "stage": "done",
+      "duration_ms": 80080,
+      "input_tokens": 512,
+      "output_tokens": 24651,
+      "reasoning_tokens": 10530,
+      "file_list": [
+        "index.html"
+      ],
+      "file_sizes": {
+        "index.html": 49952
+      },
+      "integrity_ok": false,
+      "integrity_failures": [
+        "入口引用的本地资源缺失：${esc(p.image)}、${esc(product.image)}"
+      ],
+      "missing_refs": [
+        "${esc(p.image)}",
+        "${esc(product.image)}"
+      ],
+      "scope_ok": false,
+      "preview_status": 200,
+      "preview_bytes": 44817,
+      "stage_track": [
+        "running/generating@70",
+        "success/done@100"
+      ],
+      "error_msg": null,
+      "plan": null
+    },
+    {
+      "need_id": "r3",
+      "mode": "multi",
+      "attempt": 1,
+      "task_uuid": "9bd71643c0614359bccdcfb873b4c75b",
+      "submit_seconds": 0.12469309999869438,
+      "e2e_seconds": 25.6,
+      "status": "success",
+      "stage": "done",
+      "duration_ms": 24443,
+      "input_tokens": 2714,
+      "output_tokens": 6906,
+      "reasoning_tokens": 0,
+      "file_list": [
+        "index.html",
+        "script.js",
+        "style.css"
+      ],
+      "file_sizes": {
+        "index.html": 3967,
+        "script.js": 5658,
+        "style.css": 6721
+      },
+      "integrity_ok": false,
+      "integrity_failures": [
+        "入口引用的本地资源缺失：products.html、about.html、contact.html、products.html、contact.html、products.html、products.html、about.html、contact.html"
+      ],
+      "missing_refs": [
+        "products.html",
+        "about.html",
+        "contact.html",
+        "products.html",
+        "contact.html",
+        "products.html",
+        "products.html",
+        "about.html",
+        "contact.html"
+      ],
+      "scope_ok": false,
+      "preview_status": 200,
+      "preview_bytes": 3423,
+      "stage_track": [
+        "running/generating@70",
+        "success/done@100"
+      ],
+      "error_msg": null,
+      "plan": null
+    },
+    {
+      "need_id": "r3",
+      "mode": "agent",
+      "attempt": 1,
+      "task_uuid": "4d7afcea1e954cf0a110666f70296178",
+      "submit_seconds": 0.14516860000003362,
+      "e2e_seconds": 76.2,
+      "status": "success",
+      "stage": "done",
+      "duration_ms": 74387,
+      "input_tokens": 51241,
+      "output_tokens": 23457,
+      "reasoning_tokens": 353,
+      "file_list": [
+        "about.html",
+        "contact.html",
+        "index.html",
+        "products.html",
+        "products.js",
+        "products.json",
+        "style.css"
+      ],
+      "file_sizes": {
+        "about.html": 8152,
+        "contact.html": 9339,
+        "index.html": 7227,
+        "products.html": 4403,
+        "products.js": 9589,
+        "products.json": 3239,
+        "style.css": 22688
+      },
+      "integrity_ok": true,
+      "integrity_failures": [],
+      "missing_refs": [],
+      "scope_ok": true,
+      "preview_status": 200,
+      "preview_bytes": 5624,
+      "stage_track": [
+        "running/planning@55",
+        "running/generating@70",
+        "running/done@100",
+        "success/done@100"
+      ],
+      "error_msg": null,
+      "plan": {
+        "difficulty_declared": "hard",
+        "difficulty": "hard",
+        "planned_file_count": 7,
+        "budget_steps": 20,
+        "budget_output_tokens": 80000,
+        "validation_warnings": [],
+        "actual_steps": 3,
+        "actual_file_count": 7,
+        "outcome_status": "success",
+        "entry_file": "index.html",
+        "planned_files": [
+          "index.html",
+          "products.html",
+          "about.html",
+          "contact.html",
+          "style.css",
+          "products.js",
+          "products.json"
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "single": {
+      "runs": 3,
+      "success": 3,
+      "integrity_ok": 2,
+      "delivered": 2,
+      "success_rate": 1.0,
+      "delivery_rate": 0.67,
+      "avg_input_tokens": 510,
+      "avg_output_tokens": 17642,
+      "out_tokens_per_delivery": 26462,
+      "avg_duration_ms": 58211,
+      "avg_e2e_seconds": 59.8
+    },
+    "multi": {
+      "runs": 3,
+      "success": 2,
+      "integrity_ok": 1,
+      "delivered": 1,
+      "success_rate": 0.67,
+      "delivery_rate": 0.33,
+      "avg_input_tokens": 2303,
+      "avg_output_tokens": 5265,
+      "out_tokens_per_delivery": 15794,
+      "avg_duration_ms": 18466,
+      "avg_e2e_seconds": 20.1
+    },
+    "agent": {
+      "runs": 3,
+      "success": 3,
+      "integrity_ok": 3,
+      "delivered": 3,
+      "success_rate": 1.0,
+      "delivery_rate": 1.0,
+      "avg_input_tokens": 39055,
+      "avg_output_tokens": 14203,
+      "out_tokens_per_delivery": 14203,
+      "avg_duration_ms": 48124,
+      "avg_e2e_seconds": 50.0
+    }
+  }
+}

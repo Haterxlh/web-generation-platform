@@ -1,7 +1,7 @@
 # 项目进度 —— backend-uv-fastapi
 
 > 本文件用于跨会话同步开发进度。每次总结进度时按此格式更新。
-> 最近更新时间：2026-09-15
+> 最近更新时间：2026-09-15（Agent 框架阶段 7 完成）
 
 ## 1. 模块进度
 
@@ -147,10 +147,11 @@
     2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
-### 模块：Agent 框架（阶段 0~6）
-- **状态**：进行中（阶段 0~6 已完成；阶段 7 新旧对照、阶段 8 前端对接与二期 RAG 见 `docs/agent_refactor_plan.md`）
+### 模块：Agent 框架（阶段 0~7）
+- **状态**：进行中（阶段 0~7 已完成；阶段 8 前端对接与二期 RAG 见 `docs/agent_refactor_plan.md`）
 - **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
-  并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示
+  并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示；
+  阶段 7 用**新旧实现对照数据**决定旧实现的去留
 - **已交付内容**：
   - 接口变更：
     - `POST /api/generation/create` —— 同步 → **202 + 已受理**（返回 `poll_url` / `poll_interval_ms`）
@@ -166,6 +167,8 @@
     - `app/api/generation.py`、`app/main.py`（`lifespan` 管理 arq 池）
     - `docker-compose.yml`（redis + pgvector/pg18）、`sql/scripts/alter_generation_task_stage.sql`
     - `tests/test_task_pipeline.py`、`app/utils/utils_check/check_arq.py`、`check_http_e2e.py`
+    - 阶段 7 新增：`app/utils/utils_check/check_compare.py`（三模式对照实验 + `--recheck` 离线重判）、
+      `tests/test_compare_checks.py`、`docs/experiments/stage7_compare_*.json`（原始数据 + 重判结果）
   - 前端：`src/types/generation_types.ts`（+`AgentStage` / `GenerateAccepted`）、`src/api/generation_api.ts`、
     `src/pages/Generate/GeneratePage.tsx`（改为轮询 + 进度条 + 已等待计时）、`src/styles/global.css`
 - **关键决策**：
@@ -429,6 +432,19 @@
     - **循环中途不向用户提问**、**不做 LangGraph checkpoint 断点恢复**：都是刻意的 V1 边界
     - 本次验证留下若干临时账号（`wagent*` / `probe*` / `poll*`）与若干探针任务/产物
       （含 1 条因旧 worker 报"尚未实现"的失败任务、1 条成功的 `07fd418f…`），如需清理请手动处理
+  - **阶段 7 遗留**：
+    - **每个组合只跑 1 次**（用户选的轻量档）：成功率是初步信号；`multi` 的两条证据
+      （最简单需求失败 + 死链）是**结构性**的，所以退役结论站得住，但若将来要写进对外结论，
+      建议对 `multi`/`agent` 的 r1、r3 补跑到 3 次
+    - **成本只算了 token，没折算成钱**：agent 输入 token 是 single 的 76 倍（多轮往返每轮重发历史），
+      输入单价通常远低于输出 → 折算后差距会缩小，**是否可接受要看真实账单**（本次刻意不编造价格）
+    - **`multi` 代码仍在**（`agents/multi_file_graph.py` + `_GENERATORS`）：只标注 deprecated、
+      未删除 —— 保留是为了兼容历史调用与"数据反转时能回退"；前端在阶段 8 不再暴露它
+    - **`single` 的定位需要在阶段 8 用界面表达出来**（"单页极速"），否则用户会在多页需求上选它，
+      拿到一个"能打开但只有一页"的产物
+    - 本次对照留下 2 个临时账号 `cmp7407438c72`（user_id=14，冒烟）与 `cmpb7b1ad8703`（user_id=15，正式）
+      及其 10 条任务与 `generated/15/` 下的产物（均已 gitignore），如需清理请手动处理
+    - 报告 JSON 只存指标不存产物内容 → 判断"产物好不好看"仍要人工打开预览
 - **阶段 6 交付（2026-09-15）★主流程打通**：
   - **内层 ReAct 环**：`app/agents/web/web_agent.py` —— 手写 `StateGraph`
     （`model`(bind_tools) → 条件边 → `ToolNode` → 回 `model`）；每次生成新建 store + 新建图；
@@ -476,6 +492,39 @@
     产物 `['index.html']` 落盘且 trace 落盘 /
     对账行：预估 `easy, 1 文件, 预算 6 步` ↔ 实际 `2 步, 1 文件, success`，
     结束后任务行、规划行、产物目录全部清理
+- **阶段 7 交付（2026-09-15）★退役判断落地**：
+  - **对照实验脚本** `app/utils/utils_check/check_compare.py`：真实 HTTP（注册临时账号 → create →
+    轮询 → 签票 → 拉产物）跑 **需求 × 模式 × 次数** 的组合，采集四类指标并落盘 JSON；
+    带 `--dry-run` 成本护栏（先看清单再开跑）与 **`--recheck` 离线重判**（判据变了不必重跑模型）
+  - **判据（与"用户打开会不会 404"对齐）**：完整度 = 入口存在 + 清单文件全部落盘 +
+    **入口引用的本地资源都在**（只扫标记语言：跳过 `<script>`/`<style>` 正文、HTML 注释与
+    `${...}` 模板表达式）+ 入口含 `</html>` 且 ≥200 字节 + 预览 HTTP 200；
+    `scope`（文件数达预期）**单列**，不混进完整度（那是主观预期，会污染"single 天生单文件"的比较）
+  - **数据（3 需求 × 3 模式 × 1 次 = 9 次真实生成，出厂配置不拉平客户端）**：
+
+    | 模式 | 成功 | 产物完整 | 文件数达预期 | 平均输入 | 平均输出 | 每份可用交付输出 | 平均端到端 |
+    |---|---|---|---|---|---|---|---|
+    | `single` | 3/3 | 3/3 | **1/3** | **510** | 17642 | 17642 | 59.8s |
+    | `multi` | 2/3 | 1/3 | 1/3 | 2303 | 5265 | 15794 | **20.1s** |
+    | `agent` | 3/3 | **3/3** | **3/3** | 39055 | **14203** | **14203** | 50.0s |
+
+  - **退役判断**：`multi` **退役**（deprecated，代码与 `gen_type` 保留仅为兼容）——
+    它在最简单的 r1 就硬失败（交不出 css/js），r3 又交出**导航指向 3 个从未生成的页面**的死链产物；
+    `agent` **转正为默认**（唯一交付完整 7 文件官网、每份可用交付输出 token 最低）；
+    `single` 保留为**单页极速**路径（输入 token 仅 agent 的 1/76，但对多页需求只能塞进一个文件）
+  - **难度档位校正**：3 例 `declared == difficulty`、`planned_file_count == actual_file_count`（1/3/7）、
+    结果全 success；**实际步数 2/4/3 远低于预算 6/12/20 —— 预算一次都没触发刹车**
+    → **暂不下调预算**（它是防跑飞的安全网，收紧会让 hard 需求被误掐）；省钱应从合并工具调用入手
+  - **配套改动**：`generation_schemas.py` 的 `gen_type` 描述标注 `multi` 已退役；
+    `generation_service.py` 的 `_GENERATORS` 上方写入阶段 7 对照结论（谁退役、为什么、数据在哪）；
+    `USEFUL_COMMAND.md` 新增 §11；`generation_module_design.md` 修正 §5（异步现状）+ 新增
+    **§5.1 三种生成模式的定位**；`agent_refactor_plan.md` 阶段 7 打勾 + §6 实验记录三条 + 阶段 8 补两条硬要求
+  - **验证情况**：`pytest` **447 个用例全绿**（438 → 新增 9，全部离线）；
+    `check_compare` 实跑 9 次，并在 `--recheck` 下结论稳定（假阳性修正后 `single` 由 2/3 → 3/3 完整，
+    `multi` 的死链结论不变）
+  - **偏差 / 教训**：判据第一版把 `<script>` 里的 JS 模板串当静态引用 → 误判正常产物；
+    修正后**新增离线重判模式**（产物还在磁盘上，修判据不该等于再烧一次钱），
+    并把假阳性固化成 9 个回归用例（含"`<script src=...>` 的 src 必须保留"这一反向约束）
 
 ## 2. 项目级约定（跨模块通用）
 - 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
@@ -519,10 +568,14 @@
       门禁 + 定向补缺）、`orchestrator.py`（外层装配图）、`web_agent_system.md`、
       `gen_type="agent"` 与 `agent_generation_service.py`（落库 + 回填实际值 + 落盘 trace）；
       ⚠️ **需重启 arq worker 后**才能通过 HTTP 端到端（见上方遗留）
-- [ ] **Agent 框架阶段 7（新旧对照 + 退役判断）**：用**同一需求**分别跑
-      `single` / `multi` / `agent` 三种模式，记录并对比**成功率 / 产物完整度 / 总 token / 耗时**；
-      同时用 `generation_plan` 的"预估 vs 实际"数据校正难度档位与提示词
-      —— **只有数据支持才退役旧实现**，否则回退并重新评估（归属：Agent 框架）
+- [x] **Agent 框架阶段 7（新旧对照 + 退役判断）**（已完成 2026-09-15）：`check_compare.py` 跑
+      3 需求 × 3 模式 = 9 次真实生成，产出成功率 / 完整度 / token / 耗时对照表；
+      **结论：`multi` 退役（deprecated）、`agent` 转正为默认、`single` 留作单页极速路径**；
+      难度档位经对账数据核对后**维持不变**（预算从未触发）（归属：Agent 框架）
+- [ ] **Agent 框架阶段 8（前端对接）**：会话式 Generate 页（聊天区 + 附件 chip + 需求确认卡 +
+      阶段进度条）、`src/api/agent_api.ts`、`src/types/agent_types.ts`；
+      ⚠️ 必须一起落地阶段 7 的两条硬要求：**默认 `gen_type` 切到 `agent`、界面不再暴露 `multi`**；
+      并区分"失败"与"停在 `clarifying` 等用户补充"（归属：Agent 框架 / frontend-react）
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
@@ -602,7 +655,21 @@
   **端到端 HTTP 段于同日 worker 重启后补跑通过**：
   `queued → retrieving → planning → generating → done`、预览 HTTP 200（10928 字符）、
   对账 预估 `easy,1 文件,6 步` ↔ 实际 `2 步,1 文件,success`（19246ms）
+- **2026-09-15（Agent 框架阶段 7）★退役判断落地**：新增**三模式对照实验** ——
+  `app/utils/utils_check/check_compare.py`（真实 HTTP + 9 次真实生成 + `--dry-run` 成本护栏 +
+  **`--recheck` 离线重判**）、`tests/test_compare_checks.py`（9 例）、
+  报告 `docs/experiments/stage7_compare_*.json`；
+  **结论：`multi` 退役（deprecated，保留代码兼容）、`agent` 转正为默认、`single` 留作单页极速路径**
+  （`multi` 连最简单的单页需求都硬失败，复杂需求交出导航死链的破损产物；
+  `agent` 是唯一交付完整 7 文件官网的实现，每份可用交付输出 token 最低）；
+  难度档位经 `generation_plan` 对账后**维持不变**（实际步数 2/4/3 远低于预算 6/12/20，从未刹车）；
+  踩到并修正一个**判据假阳性**（把 `<script>` 里的 JS 模板串当缺失文件），
+  教训固化为"判据可离线重判"：修判据不必重跑模型；
+  回写 `generation_module_design.md`（+§5.1 模式定位）、`agent_refactor_plan.md`（阶段 7 + §6 实验记录）、
+  `USEFUL_COMMAND.md`（+§11）；`pytest` **447 个用例全绿**（438 → 新增 9）
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）
-- 生成模块设计约定：`docs/generation_module_design.md`（分层、agents 约定、task_uuid、接口命名、DeepSeek 接入约束、边界与已知取舍）
+- 生成模块设计约定：`docs/generation_module_design.md`（分层、agents 约定、task_uuid、接口命名、DeepSeek 接入约束、边界与已知取舍；**§5.1 三种生成模式的定位**）
+- Agent 框架重构计划与验收清单：`docs/agent_refactor_plan.md`（阶段 0~7 已完成，阶段 8 待做）
+- 阶段 7 对照实验原始数据：`docs/experiments/stage7_compare_*.json`（`*_recheck.json` 为权威口径）

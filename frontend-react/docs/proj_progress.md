@@ -1,7 +1,7 @@
 # 项目进度 —— frontend-react
 
 > 本文件用于跨会话同步开发进度。每次总结进度时按此格式更新。
-> 最近更新时间：2026-09-14
+> 最近更新时间：2026-09-15（同步后端阶段 7 结论 → 阶段 8 待做）
 
 ## 1. 模块进度
 
@@ -107,6 +107,14 @@
 - 生产环境 `/api` 由 Nginx/网关转发；`server.proxy` 仅开发服务器生效（`npm run preview` 不代理）
 
 ## 3. 下一步计划（按优先级）
+- [ ] **Agent 框架阶段 8（前端对接）**：会话式 Generate 页（聊天区 + 附件 chip + 需求确认卡片 +
+      阶段进度条）、`src/api/agent_api.ts`、`src/types/agent_types.ts`（后端 `docs/agent_refactor_plan.md` 阶段 8）
+      - ⚠️ 阶段 7 对照实验（2026-09-15，后端已完成）定了两条**必须一起落地**的事：
+        ① **默认 `gen_type` 切到 `agent`**，界面选项从"单文件 / 多文件"改成
+        "Agent 生成（默认）/ 单页极速（single）"，**不再暴露 `multi`**（已 deprecated）；
+        ② 提交后要区分**失败**与**停在 `clarifying` 等用户补充**（后者不是失败，不能报红）
+      - 依据：`../backend-uv-fastapi/docs/experiments/stage7_compare_*.json`（`multi` 连最简单需求都硬失败，
+        `agent` 是唯一交付完整多页产物的实现）
 - [ ] 生成进度体验：先加"已等待 N 秒"计时器；等后端 SSE 就绪后接流式进度（"正在规划 / 正在生成"）
 - [ ] 首页真实内容（当前为占位 / 简介）
 - [ ] 可选：Vitest 单元测试；`AbortController` 取消在途请求；表单字段级校验

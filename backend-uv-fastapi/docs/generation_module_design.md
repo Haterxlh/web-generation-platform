@@ -121,16 +121,43 @@ POST /api/generation/create
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/generation/create` | 创建并执行生成（同步返回结果） |
+| POST | `/api/generation/create` | 建任务并入队，**202 立即返回**（阶段 0 起异步；响应含 `poll_url` / `poll_interval_ms`） |
 | GET | `/api/generation/list` | 我的生成历史（分页） |
-| GET | `/api/generation/{task_uuid}` | 查单个任务详情 |
-| GET | `/api/generation/stream/{task_uuid}` | 流式进度（SSE，步骤 10） |
+| GET | `/api/generation/{task_uuid}` | 查单个任务详情，**同时是进度轮询接口**（`stage` / `stage_text` / `progress`） |
+| POST | `/api/generation/{task_uuid}/preview-ticket` | 签发预览票据（HttpOnly Cookie，Path 锁在本次预览目录） |
+| GET | `/api/generation/stream/{task_uuid}` | 流式进度（SSE）—— **尚未实现**，当前靠轮询 |
 
 ⚠️ **路由顺序**：`/list` 必须声明在 `/{task_uuid}` **之前**，否则 FastAPI 会把 `list` 当成一个 `task_uuid` 匹配掉。
 
 - 路由 `prefix="/generation"`，`tags=["生成"]`；`main.py` 中 `include_router(..., prefix="/api")`
-- `gen_type` 枚举值固定为字符串 `"single"` / `"multi"`（不用数字，保证可读）
-- 状态机：`running` → `success` / `failed`
+- `gen_type` 枚举值固定为字符串 `"single"` / `"multi"` / `"agent"`（不用数字，保证可读）
+- 状态机：`running` → `success` / `failed`；**`stage` 与 `status` 正交**（阶段是进度，状态是生命周期）
+
+### 5.1 三种生成模式的定位（**阶段 7 对照结论，2026-09-15**）
+
+用**同一批需求**（简单单页 / 中等多文件 / 复杂多页+数据文件）× 三种模式各跑 1 次，
+判据见 `app/utils/utils_check/check_compare.py`，原始数据见 `docs/experiments/`：
+
+| 模式 | 成功 | 产物完整 | 文件数达预期 | 平均输入 token | 平均输出 token | 每份可用交付输出 token | 平均端到端 |
+|---|---|---|---|---|---|---|---|
+| `single` | 3/3 | 3/3 | **1/3** | **510** | 17642 | 17642 | 59.8s |
+| `multi` | 2/3 | 1/3 | 1/3 | 2303 | 5265 | 15794 | **20.1s** |
+| `agent` | 3/3 | **3/3** | **3/3** | 39055 | **14203** | **14203** | 50.0s |
+
+结论（**这就是本模块当前的模式定位**）：
+
+1. **`agent` 是默认路径**（阶段 8 前端切过去）：唯一能交付多页 + 数据文件的实现，
+   每份可用交付的输出 token 最低。
+2. **`multi` 已退役**（代码与 `gen_type` 保留，仅为兼容历史调用，**不要在新代码里用**）：
+   它在**最简单的单页需求**上就硬失败（"必须一次交出三个代码块"这一契约是根因，
+   见 `agent_refactor_plan.md` §1 诊断），复杂需求则交出"导航指向 3 个从未生成的页面"的破损产物。
+3. **`single` 保留为"单页极速"路径**：结构完整度 3/3，输入 token 只有 agent 的 1/76；
+   代价是对多页需求只能把一切塞进一个文件（r3 因此烧掉 24651 输出 token、耗时 81.4s）。
+   → 只在需求明确是**单页**时选它。
+4. **`agent` 的输入 token 显著更高**（多轮工具往返每轮重发历史，见 §7 与硬约束 8）：
+   这是它最真实的代价，省钱的着力点应在"合并工具调用 / 精简提示词"，而不是收紧步数预算
+   （本次实测实际步数 2/4/3 远低于预算 6/12/20，预算从未触发）。
+
 
 ## 6. 命名与编码约定（沿用用户模块既有习惯）
 
@@ -183,9 +210,12 @@ POST /api/generation/create
 
 - 不负责前端展示与代码编辑器（前端职责）
 - 不负责生成产物的长期存储治理（当前为本地目录，后续可换对象存储）
-- 不做对话式多轮修改（V1 只做"一句话 → 一次性产出"）
-- **预览静态资源不做鉴权**：`/preview/{user_id}/{task_uuid}/index.html` 只要 URL 不泄露就能打开
-  （以 task_uuid 不可猜作为"能力凭证"，类似"知道链接即可访问"）。生产环境应改为带鉴权的路由或签名 URL。
+- ~~不做对话式多轮修改（V1 只做"一句话 → 一次性产出"）~~ —— **已被 Agent 流水线取代**：
+  对话澄清、附件理解、规划、工具调用生成见 `docs/agent_refactor_plan.md`（阶段 0~6 已落地）。
+  仍然成立的部分：**不做"基于已有产物的增量改代码"**（改一句话就要重新生成一次）。
+- **预览静态资源鉴权走 Cookie 票据**（阶段 0 起）：`/preview/{user_id}/{task_uuid}/index.html`
+  需要先调 `preview-ticket` 拿到绑定 `user_id + task_uuid` 的 HttpOnly Cookie，
+  Cookie 的 Path 锁死在本次任务目录（子资源自动携带）。票据 30 分钟过期，**不可分享给他人**。
 
 ## 9. 变更记录
 
@@ -194,3 +224,4 @@ POST /api/generation/create
 | 2026-09-12 | 初版：确定分层、agents 层职责与纯函数接口约定、task_uuid、接口路径与命名约定 |
 | 2026-09-12 | 新增 §7 DeepSeek 接入约束（思考模式开关、temperature 失效、双客户端）；§4 补充"文件名必须钉死"；§2 补充 `settings_base.py` |
 | 2026-09-12 | §8 补充"预览静态资源不做鉴权"这一已知取舍 |
+| 2026-09-15 | §5 修正为异步现状（202 + 轮询 + 预览票据，SSE 标注未实现）；新增 **§5.1 三种生成模式的定位（阶段 7 对照结论）**；§8 更新边界（对话式流水线已落地、预览改为票据鉴权） |

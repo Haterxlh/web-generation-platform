@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 # 阶段 6 新增的 "agent" 模式不走这里 —— 它需要 db/task（要写阶段、写规划记录、回填实际值），
 # 因此由 `agent_generation_service` 单独处理，见 execute_pipeline 里的分支。
 # 测试正是靠替换这个字典来注入假生成器，从而完全离线跑通全流程。
+#
+# 阶段 7 对照结论（2026-09-15，同一批需求 3 需求 × 3 模式）：
+#   multi  **已退役**（仅保留代码与接口兼容，不再作为前端选项）——
+#          3 次里 1 次硬失败（连最简单的单页需求都交不出三件套），
+#          复杂需求一次交出"导航指向 3 个从未生成的页面"的破损产物（产物完整度 1/3）；
+#          根因是它把"html+css+js 三个代码块"当成**一次不可分割的赌注**（见 §1 诊断）。
+#   single 保留为"单页极速"路径：3/3 结构完整，输入 token 仅 agent 的 1/76；
+#          但它对多页需求只能把一切塞进一个文件（文件数达标 1/3）。
+#   数据与判据：`docs/experiments/stage7_compare_*.json`、`check_compare.py`。
 _GENERATORS = {
     "single": generate_single_html,
     "multi": generate_multi_file,

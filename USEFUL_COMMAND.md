@@ -256,3 +256,24 @@ curl http://127.0.0.1:8000/api/generation/<task_uuid> -H "Authorization: Bearer 
 > 带附件时再加 `"session_uuid":"<uuid>"`（附件必须先用 `/api/agent/source/upload` 传进该会话）。
 > 三种模式并存：`single` / `multi`（旧实现，阶段 7 做对照）与 `agent`（新流水线）。
 > 难度档位与"预估 vs 实际"对账见 `generation_plan` 表（`docs/agent_refactor_plan.md` 阶段 5）。
+
+### 11. 新旧实现对照实验（阶段 7）
+
+11.1 三模式对照（成功率 / 产物完整度 / 总 token / 耗时）
+
+```shell
+cd ./backend-uv-fastapi
+uv run python -m app.utils.utils_check.check_compare --dry-run   # 先看将执行的组合，不调模型
+uv run python -m app.utils.utils_check.check_compare             # 默认 3 需求 × 3 模式 × 1 次 = 9 次
+```
+
+> ⚠️ 本脚本会**真实调用大模型**（按 token 计费），且需要 API 与 **worker 同时在跑**。
+> 常用参数：`--needs r1,r3`（挑需求）、`--modes agent,multi`（挑模式）、`--runs 3`（重复次数）、
+> `--timeout 600`（单次轮询上限秒）。
+> 判据：`integ=Y` 表示产物完整（入口存在、清单文件全部落盘、入口引用的本地资源都在、
+> 入口不是被截断的 HTML）；`delivery` = 成功且产物完整；`out/delivery` = 每份**可用交付**
+> 平均烧掉的输出 token（含失败任务的浪费）。
+> 报告落盘 `docs/experiments/stage7_compare_<时间戳>.json`（含明细 / 汇总 / agent 对账）。
+>
+> 中文控制台若显示乱码或报 `UnicodeEncodeError`，用 `$env:PYTHONIOENCODING="utf-8"` 再跑。
+
