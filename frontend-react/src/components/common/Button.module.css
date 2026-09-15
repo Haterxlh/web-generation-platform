@@ -1,0 +1,58 @@
+/* 通用按钮（对应 Button.tsx）：primary=主操作，ghost=次要操作 */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: inherit;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ===== 尺寸 ===== */
+.md {
+  height: 38px;
+  padding: 0 18px;
+  font-size: 14px;
+}
+
+.sm {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.block {
+  width: 100%;
+}
+
+/* ===== 变体 ===== */
+.primary {
+  color: #fff;
+  background: var(--color-primary);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.ghost {
+  color: var(--color-text);
+  background: var(--color-surface);
+  border-color: var(--color-border);
+}
+
+.ghost:hover:not(:disabled) {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}

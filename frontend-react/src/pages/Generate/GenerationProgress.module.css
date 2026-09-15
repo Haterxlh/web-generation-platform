@@ -1,0 +1,124 @@
+/* 生成进度 / 澄清提示 / 结果卡片（对应 GenerationProgress.tsx） */
+
+.progress,
+.result,
+.clarify,
+.error {
+  margin-top: 20px;
+  padding: 16px 20px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.stage {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.elapsed {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.track {
+  height: 6px;
+  overflow: hidden;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+}
+
+.fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.detail {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-muted);
+  word-break: break-all;
+}
+
+.hint {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+/* ===== 澄清（暂停等人）===== */
+.clarify {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border-color: #fde68a;
+}
+
+.clarifyTitle {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.clarifyText {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--color-warning);
+}
+
+/* ===== 失败 ===== */
+.error {
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger-border);
+}
+
+.errorTitle {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.errorText {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* ===== 成功结果 ===== */
+.resultTitle {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.resultList {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 1.9;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.note {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}

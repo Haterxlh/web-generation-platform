@@ -1,0 +1,108 @@
+/* 全局布局壳：顶部导航 + 用户区 + 内容区 + 页脚（对应 AppLayout.tsx） */
+
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 24px;
+  height: 56px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.logo {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.nav {
+  display: flex;
+  gap: 4px;
+}
+
+.navLink {
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  font-size: 14px;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.navLink:hover {
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+/* 与 .navLink 叠加使用：styles.navLink + ' ' + styles.navLinkActive */
+.navLinkActive {
+  color: var(--color-primary);
+  font-weight: 600;
+  background: rgba(79, 70, 229, 0.08);
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.footer {
+  padding: 16px 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+/* ===== 头部用户区 ===== */
+.user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.userName {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.userLink {
+  font-size: 14px;
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.userLink:hover {
+  text-decoration: underline;
+}
+
+.userButton {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.userButton:hover {
+  color: var(--color-text);
+  border-color: var(--color-text-muted);
+}

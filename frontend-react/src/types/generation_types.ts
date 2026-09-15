@@ -3,8 +3,14 @@
  * 后端出入参字段为蛇形命名，前端保持 snake_case，不做驼峰转换。
  */
 
-/** 生成类型：single=单个 HTML 文件；multi=html+css+js 多文件（对应后端 Literal["single","multi"]） */
-export type GenType = 'single' | 'multi'
+/**
+ * 生成类型（对应后端 Literal["single","multi","agent"]）。
+ * - `agent`：Agent 流水线，**默认路径**（阶段 7 对照实验结论）
+ * - `single`：单个 HTML 文件，"单页极速"路径（输入 token 只有 agent 的 1/76）
+ * - `multi`：**已退役**（阶段 7：连最简单的单页需求都硬失败、复杂需求交死链产物）。
+ *   类型里保留它只是为了兼容历史任务数据的展示，**新代码不要再用**。
+ */
+export type GenType = 'single' | 'multi' | 'agent'
 
 /** 生成任务状态（对应后端 status 字段的取值） */
 export type GenStatus = 'running' | 'success' | 'failed'
@@ -12,6 +18,10 @@ export type GenStatus = 'running' | 'success' | 'failed'
 /**
  * Agent 流水线阶段（对应后端 app/agents/stages.py 的 AgentStage）。
  * 与 status 正交：status 表示"活着还是结束了"，stage 表示"走到哪一步了"。
+ *
+ * ⚠️ `clarifying` 是**暂停等人**（human-in-the-loop），不是失败：
+ * 此时 `status` 仍是 running，用户在会话里补充信息后重新触发即可。
+ * 前端必须把它和 `failed` 分开渲染（见阶段 7 给阶段 8 定的两条硬要求）。
  */
 export type AgentStage =
   | 'queued'
@@ -20,6 +30,7 @@ export type AgentStage =
   | 'retrieving'
   | 'planning'
   | 'generating'
+  | 'clarifying'
   | 'done'
   | 'failed'
 
@@ -27,8 +38,13 @@ export type AgentStage =
 export interface GenerateRequest {
   /** 网页需求描述（后端限制 2~2000 字） */
   prompt: string
-  /** 生成类型，默认 single */
+  /** 生成类型；新代码用 agent（默认路径）或 single（单页极速） */
   gen_type: GenType
+  /**
+   * 可选：来源会话标识。agent 模式带附件时必须给 —— 附件别名 `@docN` 的作用域是会话，
+   * 不给的话生成时会读不到任何附件（后端会校验会话归属，传别人的会 404）。
+   */
+  session_uuid?: string | null
 }
 
 /** 生成任务详情：对应后端 GenerationTaskResponse */

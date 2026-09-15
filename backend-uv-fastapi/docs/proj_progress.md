@@ -1,7 +1,7 @@
 # 项目进度 —— backend-uv-fastapi
 
 > 本文件用于跨会话同步开发进度。每次总结进度时按此格式更新。
-> 最近更新时间：2026-09-15（Agent 框架阶段 7 完成）
+> 最近更新时间：2026-09-15（Agent 框架阶段 8 完成，一期全部落地）
 
 ## 1. 模块进度
 
@@ -147,11 +147,11 @@
     2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
-### 模块：Agent 框架（阶段 0~7）
-- **状态**：进行中（阶段 0~7 已完成；阶段 8 前端对接与二期 RAG 见 `docs/agent_refactor_plan.md`）
+### 模块：Agent 框架（阶段 0~8）
+- **状态**：一期已完成（阶段 0~8 全部落地；二期个人 RAG 真实现见 `docs/agent_refactor_plan.md`）
 - **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
   并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示；
-  阶段 7 用**新旧实现对照数据**决定旧实现的去留
+  阶段 7 用**新旧实现对照数据**决定旧实现的去留；阶段 8 把会话式交互接到前端
 - **已交付内容**：
   - 接口变更：
     - `POST /api/generation/create` —— 同步 → **202 + 已受理**（返回 `poll_url` / `poll_interval_ms`）
@@ -525,6 +525,65 @@
   - **偏差 / 教训**：判据第一版把 `<script>` 里的 JS 模板串当静态引用 → 误判正常产物；
     修正后**新增离线重判模式**（产物还在磁盘上，修判据不该等于再烧一次钱），
     并把假阳性固化成 9 个回归用例（含"`<script src=...>` 的 src 必须保留"这一反向约束）
+- **阶段 8 交付（2026-09-15，前端对接）★一期收口**：
+  - **界面**：会话式 Generate 页（`src/pages/Generate/`：聊天 + 附件 chip + 需求确认卡片 +
+    阶段进度 + 折叠的「极速生成（单页）」），新增 `agent_api.ts` / `agent_types.ts` /
+    `useGenerationRunner.ts` / `agent_session.ts`；详见 `frontend-react/docs/proj_progress.md`
+  - **两条硬要求（阶段 7 定）均已落地**：默认 `gen_type='agent'`、界面不再暴露 `multi`；
+    `clarifying` 用警示色渲染为"生成已暂停"并**停止轮询**（不再被误当成失败或一直排队）
+  - **补齐的过期契约**：前端 `GenType` 缺 `'agent'`、`AgentStage` 缺 `'clarifying'`、
+    `GenerateRequest` 缺 `session_uuid`；`http.ts` 只支持 JSON，新增 multipart 分支
+    （FormData 时**不设 `Content-Type`**，手写会丢 boundary → 后端 422）
+  - **后端侧零改动**：本阶段全部是前端工作 —— 说明阶段 0~6 定下的接口契约够用；
+    唯一"绕开"的是**会话列表**（后端没有该接口，前端用 localStorage 存 session_uuid + `GET /session/{uuid}` 回放）
+  - **用户实测发现并当日修复的一处前端 bug（重要契约）**：前端提交的 `prompt` 里夹带了原始对话
+    （第一条用户消息），而 **worker 的 ROUTING 只读 `task.prompt`、拿不到会话历史**，
+    于是开场问过"你能做什么"就让整段被判成能力咨询、任务停在 `clarifying` ——
+    用户刚对着确认卡片点过"开始生成"却被说"信息不够"。
+    修复：prompt 只由槽位拼成自洽完整句子，用户原话仅在槽位拼不出东西时兜底（且取**最后一条**）。
+    真实模型复现验证：同一输入由 `clarifying` 变为 `success`（66629ms）。
+    → **契约沉淀：`create` 的 `prompt` 必须独立自洽，不能塞"上下文"类内容**
+  - **同日按用户决定补齐后端侧上下文（方案 A）**：`orchestrator.run` 的 `slots` / `draft_summary`
+    两个参数**从来没被传过**，于是 ⑩ need_rag 与 ⑪ merge 在 agent 路径上一直拿不到会话草稿
+    （§3.5 的"MERGE 输入优先级第 2 位"从未生效）。本次新增 `_load_session` / `_load_draft`
+    （脏草稿按"没有草稿"处理并记警告），`_load_sources` 改为接收已载入的会话；
+    解析口径抽到 `state.parse_draft()` 与 `AgentChatService` 共用。
+    **三案例实测（进程内真模型）**：① 污染 prompt + 不传草稿 → `clarifying`；
+    ② 污染 prompt + **传**草稿 → **仍 `clarifying`**；③ 干净 prompt + 传草稿 →
+    `success`（4 文件 / medium / 2 步 / 74.3s）。
+    ⚠️ **诚实结论：本改动对齐了上下文，但不能单独挡住被污染的 prompt** ——
+    bug 的实际修复是前端 prompt；本改动的价值在 need_rag / merge 能拿到已确认的 slots/summary。
+    据此**不追加"草稿齐备就放行"的兜底**（会削弱生成路径唯一的完备度防线）。
+    新建契约文档：`generation_module_design.md` **§5.2 `prompt` 必须独立自洽**
+  - **同日第三轮（用户实测又发现两处，均已修）**：
+    1. **一次模型调用抖动就废掉整次生成**：查 `alice` 的 id=37 任务，prompt 已是新的干净格式
+       （说明前两处修复生效），但失败在门禁 —— `缺少 index.html、data.js；已尝试 1 轮、共 2 步`。
+       看 trace 只有 1 条记录而 `steps_used=2` → 定位到 `_agent_node` 把**单轮调用异常**当致命错误
+       （`stop_reason="error"`），而补缺轮又被 `stop_reason != "done"` 直接跳过 →
+       "跑了 100 秒、写好一半文件，因一次抖动全废"。
+       修复：① 单轮调用**退避重试 2 次**（`MODEL_CALL_RETRIES`）；
+       ② **因 error 仍允许补缺 1 轮**（`MAX_ERROR_REPAIR_ROUNDS`，预算类刹车仍不允许）；
+       ③ 补缺前把 `stop_reason` 清回 `done`（否则条件边在新一轮第一个节点就 END，补缺等于没补）。
+    2. **失败原因无处可查**：`WebAgentResult.warnings`（"第 2 步模型调用失败：TimeoutError"）
+       既没落盘也没入库，用户只看到"生成的文件不完整（缺少 xxx）"。
+       修复：新增 `write_debug_meta()` → 失败时落 `_debug_meta.json`
+       （stop_reason / 步数 / 轮数 / 缺失 / 用量 / warnings），并在给用户看的失败文案里
+       区分"模型调用失败"与"模型自己收工不写"。
+    新增 6 个离线用例（**454 个全绿**），其中 `test_model_failure_does_not_skip_repair_round`
+    直接复现事故形状（第 1 步写 1 个文件 → 第 2 步调用失败 → 旧实现失败、新实现补缺成功）。
+    另：**前端进度在切页后丢失**（切到「我的项目」再回来，进度条没了、按钮可点 → 会重复提交）——
+    已修为"进行中的任务落 localStorage + 回来后续算已等待秒数并继续轮询"，
+    并用 epoch 计数确保"开始新会话"能真正掐断在跑的循环（布尔标志在 await 挂起时观察不到）。
+  - **验证情况（真实 API + worker + 真实模型，按前端实际调用顺序与载荷）**：
+    模糊需求 chat → `needs_clarification`；multipart 上传 `.md`（字段名 `session_uuid`/`file`）→ `@doc1`；
+    `source/list` → 别名 + 文件名；带附件 chat → `ready=True` 且 **style 槽位取自文档**
+    （"极简风格，白色背景，元素统一 8px 圆角"）；会话回放 4 条消息角色正确；
+    `create(gen_type=agent, session_uuid)` **202** → `routing 10% → retrieving 40% → planning 55% →
+    generating 70% → done 100%` → `success` / 20552ms / 3 文件 → 签票 + 预览 **HTTP 200**；
+    前端 `lint` / `typecheck` / `build` 全绿，Vite dev server 逐个编译新模块均 200
+  - **遗留**：浏览器内的交互与观感需人工点一遍（清单在 `frontend-react/docs/proj_progress.md`）；
+    历史消息的 `@docN` chip 刷新后不重现（会话详情接口不返回消息级 attachments）；
+    只能恢复最近一个会话（无会话列表接口）；前端仍无自动化测试
 
 ## 2. 项目级约定（跨模块通用）
 - 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
@@ -572,10 +631,12 @@
       3 需求 × 3 模式 = 9 次真实生成，产出成功率 / 完整度 / token / 耗时对照表；
       **结论：`multi` 退役（deprecated）、`agent` 转正为默认、`single` 留作单页极速路径**；
       难度档位经对账数据核对后**维持不变**（预算从未触发）（归属：Agent 框架）
-- [ ] **Agent 框架阶段 8（前端对接）**：会话式 Generate 页（聊天区 + 附件 chip + 需求确认卡 +
-      阶段进度条）、`src/api/agent_api.ts`、`src/types/agent_types.ts`；
-      ⚠️ 必须一起落地阶段 7 的两条硬要求：**默认 `gen_type` 切到 `agent`、界面不再暴露 `multi`**；
-      并区分"失败"与"停在 `clarifying` 等用户补充"（归属：Agent 框架 / frontend-react）
+- [x] **Agent 框架阶段 8（前端对接）**（已完成 2026-09-15）：会话式 Generate 页（聊天 + 附件 chip +
+      需求确认卡片 + 阶段进度 + 折叠的极速单页入口）；**默认切 `agent`、不再暴露 `multi`**、
+      区分 `clarifying` 与失败；`global.css` 按组件拆成 CSS Modules（见上方模块进度）
+- [ ] **人工验证清单**：浏览器里点一遍会话式流程（清单已写入 `frontend-react/docs/proj_progress.md`
+      的「会话式生成页」模块）—— 助手只能验证到 HTTP 层与构建，观感/交互需人工确认（归属：frontend-react）
+      - 已由用户实测发现并修复一条（提交 prompt 夹带闲聊导致误判 `clarifying`），**修复后仍需再点一遍确认**
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
@@ -667,6 +728,22 @@
   教训固化为"判据可离线重判"：修判据不必重跑模型；
   回写 `generation_module_design.md`（+§5.1 模式定位）、`agent_refactor_plan.md`（阶段 7 + §6 实验记录）、
   `USEFUL_COMMAND.md`（+§11）；`pytest` **447 个用例全绿**（438 → 新增 9）
+- **2026-09-15（Agent 框架阶段 8）★一期收口**：前端**会话式 Generate 页**落地 ——
+  `src/pages/Generate/`（`GeneratePage` / `ChatPanel` / `AttachmentChips` / `RequirementCard` /
+  `GenerationProgress` / `QuickGenerateForm` + 各自 `*.module.css` + `generate_utils.ts`）、
+  `api/agent_api.ts`、`types/agent_types.ts`、`hooks/useGenerationRunner.ts`、`utils/agent_session.ts`、
+  `components/common/{Button,AuthCard,AuthField}.tsx`；
+  **默认 `gen_type` 切到 `agent`、界面不再暴露 `multi`**、`clarifying` 单独渲染并停止轮询；
+  补齐前端过期契约（`GenType`/`AgentStage`/`session_uuid`）与 `http.ts` 的 multipart 分支；
+  按用户要求把 575 行的 `global.css` 按组件拆成 CSS Modules（`frontend-react/README.md` 补「样式划分」）；
+  **后端零改动**；真实链路端到端验证通过（`success` 20552ms / 3 文件 / 预览 HTTP 200），
+  前端 `lint`/`typecheck`/`build` 全绿
+- **2026-09-15（阶段 8 补丁）**：用户实测发现"确认过需求却停在 clarifying"，
+  **前端修复**（prompt 只由槽位拼成自洽句子，开场白不再进入 prompt）+ **后端补齐上下文**
+  （`AgentGenerationService` 把会话草稿的 slots / draft_summary 传给 orchestrator 的
+  ROUTING / need_rag / merge —— 此前这两个参数在 agent 路径上恒为空）；
+  新增 3 个离线用例（共 **450** 个全绿）；新建契约 **§5.2 `prompt` 必须独立自洽**；
+  三案例实测如实记录"草稿接上也不能单独挡住被污染的 prompt"
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）

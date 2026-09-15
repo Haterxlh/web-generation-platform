@@ -277,3 +277,53 @@ uv run python -m app.utils.utils_check.check_compare             # 默认 3 需�
 >
 > 中文控制台若显示乱码或报 `UnicodeEncodeError`，用 `$env:PYTHONIOENCODING="utf-8"` 再跑。
 
+### 12. 会话式生成（阶段 8 起，前端）
+
+12.1 启动前端
+
+```shell
+cd ./frontend-react
+npm run dev
+```
+
+> http://localhost:5173 —— `/api` 与 `/preview` 都会代理到后端 8000（见 `vite.config.ts`）。
+> 会话式生成需要**三个进程同时在跑**：`fastapi dev` + `arq app.core.worker.WorkerSettings` + `npm run dev`。
+
+12.2 手工走一遍会话式流程（浏览器）
+
+1. 打开 `/generate`：输入框为空时"发送"禁用；还没有会话时"添加附件"禁用（提示先发一条消息）
+2. 发一句**模糊需求**（如"帮我做个网站"）→ Agent 会追问；补齐"做什么 + 有哪些功能"后，
+   出现**需求确认卡片**（槽位里"未提及"的项也会显示）与「开始生成」
+3. 上传一个 `.md` / `.pdf`（≤10MB）→ 出现 `@doc1` chip；传一个**扫描版 PDF** 会看到
+   chip 标红 + 一条说明（后端返回 `parse_status=failed` 而不是报错）
+4. 点「开始生成」→ 进度条 + 已等待秒数；完成后出现结果卡片 →「打开预览」
+5. **刷新页面**：历史消息会回放出来（`session_uuid` 存在 localStorage 的 `wgp_agent_session`）
+6. 折叠的「极速生成（单个 HTML 文件）」是 `single` 模式入口；界面上**不再有 multi**（已退役）
+
+12.3 用 curl 复现同一套调用（排查接口层问题）
+
+```shell
+# ① 建会话（不带 session_uuid 表示新建）
+curl -X POST http://127.0.0.1:8000/api/agent/chat \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"message":"帮我做个网站"}'
+
+# ② 上传附件（multipart；字段名必须是 session_uuid / file）
+curl -X POST http://127.0.0.1:8000/api/agent/source/upload \
+  -H "Authorization: Bearer <token>" \
+  -F "session_uuid=<uuid>" -F "file=@./需求说明.md"
+
+# ③ 带附件的对话（attachments 里的 source_uuid 来自上一步）
+curl -X POST http://127.0.0.1:8000/api/agent/chat \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"session_uuid":"<uuid>","message":"@doc1 按这份说明做","attachments":[{"source_uuid":"<source_uuid>","role":"content"}]}'
+
+# ④ 生成（agent 模式 + 会话，附件才能被读到）
+curl -X POST http://127.0.0.1:8000/api/generation/create \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"prompt":"需求要点：类型是单页展示；功能包含添加、勾选完成。","gen_type":"agent","session_uuid":"<uuid>"}'
+```
+
+> ⚠️ `POST /api/generation/create` 只接受**纯文本需求**：带附件时必须传 `session_uuid`，
+> 别把文件内容塞进 `prompt`（附件由后端从会话里读，`@docN` 的作用域是会话）。
+

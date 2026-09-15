@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import type { SubmitEvent } from 'react'
-import { Link, useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 
 import { ApiError } from '@/api/http'
+import AuthCard from '@/components/common/AuthCard'
+import AuthField from '@/components/common/AuthField'
 import { useAuth } from '@/hooks/auth_context'
 import { intendedPath } from '@/utils/navigation'
 
@@ -45,44 +47,33 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="auth-page">
-      <form className="auth-card" onSubmit={handleSubmit}>
-        <h1 className="auth-title">登录</h1>
-        <p className="auth-subtitle">登录后即可生成与管理你的项目</p>
-
-        {error !== null && <p className="auth-error">{error}</p>}
-
-        <label className="auth-field">
-          <span className="auth-label">账号</span>
-          <input
-            className="auth-input"
-            value={account}
-            onChange={(event) => setAccount(event.target.value)}
-            placeholder="请输入账号"
-            autoComplete="username"
-          />
-        </label>
-
-        <label className="auth-field">
-          <span className="auth-label">密码</span>
-          <input
-            className="auth-input"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="请输入密码"
-            autoComplete="current-password"
-          />
-        </label>
-
-        <button className="auth-button" type="submit" disabled={submitting}>
-          {submitting ? '登录中…' : '登录'}
-        </button>
-
-        <p className="auth-switch">
-          还没有账号？<Link to="/register">去注册</Link>
-        </p>
-      </form>
-    </div>
+    <AuthCard
+      title="登录"
+      subtitle="登录后即可生成与管理你的项目"
+      error={error}
+      submitLabel="登录"
+      submittingLabel="登录中…"
+      submitting={submitting}
+      switchText="还没有账号？"
+      switchTo="/register"
+      switchLabel="去注册"
+      onSubmit={handleSubmit}
+    >
+      <AuthField
+        label="账号"
+        value={account}
+        onChange={setAccount}
+        placeholder="请输入账号"
+        autoComplete="username"
+      />
+      <AuthField
+        label="密码"
+        type="password"
+        value={password}
+        onChange={setPassword}
+        placeholder="请输入密码"
+        autoComplete="current-password"
+      />
+    </AuthCard>
   )
 }

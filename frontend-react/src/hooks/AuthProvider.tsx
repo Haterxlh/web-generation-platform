@@ -10,6 +10,7 @@ import { getCurrentUser, loginUser, registerUser } from '@/api/user_api'
 import { AuthContext } from '@/hooks/auth_context'
 import type { AuthContextValue } from '@/hooks/auth_context'
 import type { LoginRequest, RegisterRequest, User } from '@/types/user_types'
+import { clearAgentSessionUuid } from '@/utils/agent_session'
 import { clearToken, getToken, setToken } from '@/utils/token'
 
 /** 登录状态提供者：包在 <App /> 外层使用 */
@@ -77,6 +78,9 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     clearToken()
+    // 会话标识必须一起清：它是**上一个账号**的会话，留着会让新登录的人
+    // 打开生成页时去回放别人的会话（后端会 404，虽然安全但看起来像"数据丢了"）
+    clearAgentSessionUuid()
     setUser(null)
   }, [])
 

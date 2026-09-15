@@ -3,8 +3,10 @@ import { Link } from 'react-router-dom'
 
 import { listGenerations } from '@/api/generation_api'
 import { ApiError } from '@/api/http'
+import Button from '@/components/common/Button'
 import { useOpenPreview } from '@/hooks/useOpenPreview'
 import type { GenerationTask, GenStatus, GenType } from '@/types/generation_types'
+import styles from './ProjectsPage.module.css'
 
 /** 每页条数（后端 page_size 允许 1~100，这里取一个适合阅读的值） */
 const PAGE_SIZE = 10
@@ -19,10 +21,21 @@ const STATUS_TEXT: Record<GenStatus, string> = {
   failed: '失败',
 }
 
-/** 生成类型 → 中文文案 */
+/** 状态 → 样式类名（同样用 Record 保证新增状态时编译期报错） */
+const STATUS_CLASS: Record<GenStatus, string> = {
+  running: styles.statusRunning,
+  success: styles.statusSuccess,
+  failed: styles.statusFailed,
+}
+
+/**
+ * 生成类型 → 中文文案。
+ * `multi` 已退役（阶段 7），但历史任务里还有它的记录 —— 照实显示，不假装没有。
+ */
 const GEN_TYPE_TEXT: Record<GenType, string> = {
-  single: '单文件',
-  multi: '多文件',
+  agent: 'Agent 生成',
+  single: '单页极速',
+  multi: '多文件（已退役）',
 }
 
 /**
@@ -99,25 +112,25 @@ export default function ProjectsPage() {
       <h1>我的项目</h1>
       <p className="page-desc">这里是你所有的生成记录，点击可重新打开预览。</p>
 
-      {error !== null && <p className="gen-error">{error}</p>}
-      {loading && <p className="proj-empty">加载中…</p>}
+      {error !== null && <p className={styles.error}>{error}</p>}
+      {loading && <p className={styles.empty}>加载中…</p>}
 
       {!loading && items.length === 0 && (
-        <p className="proj-empty">
+        <p className={styles.empty}>
           还没有生成记录，去 <Link to="/generate">生成应用</Link> 创建第一个吧。
         </p>
       )}
 
       {!loading && items.length > 0 && (
         <>
-          <ul className="proj-list">
+          <ul className={styles.list}>
             {items.map((task) => (
-              <li key={task.task_uuid} className="proj-item">
-                <div className="proj-main">
-                  <p className="proj-prompt">{task.prompt}</p>
+              <li key={task.task_uuid} className={styles.item}>
+                <div className={styles.main}>
+                  <p className={styles.prompt}>{task.prompt}</p>
 
-                  <p className="proj-meta">
-                    <span className={`proj-status proj-status-${task.status}`}>
+                  <p className={styles.meta}>
+                    <span className={`${styles.status} ${STATUS_CLASS[task.status]}`}>
                       {STATUS_TEXT[task.status]}
                     </span>
                     <span>{GEN_TYPE_TEXT[task.gen_type]}</span>
@@ -129,49 +142,49 @@ export default function ProjectsPage() {
                   </p>
 
                   {/* 失败原因必须展示：否则用户只知道"失败了"，不知道"为什么" */}
-                  {task.error_msg !== null && <p className="proj-fail">{task.error_msg}</p>}
+                  {task.error_msg !== null && <p className={styles.fail}>{task.error_msg}</p>}
                 </div>
 
-                <button
-                  className="gen-button gen-button-inline"
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   // 只有成功任务才有产物；running / failed 点下去必然被后端 400 拒绝
                   disabled={task.status !== 'success' || openingUuid === task.task_uuid}
                   onClick={() => void openPreview(task.task_uuid)}
                 >
                   {openingUuid === task.task_uuid ? '正在打开…' : '打开预览'}
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
 
-          <div className="proj-pager">
-            <button
-              className="proj-page-button"
-              type="button"
+          <div className={styles.pager}>
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={page <= 1 || loading}
               onClick={() => void load(page - 1)}
             >
               上一页
-            </button>
+            </Button>
 
-            <span className="proj-page-info">
+            <span className={styles.pageInfo}>
               第 {page} / {totalPages} 页 · 共 {total} 条
             </span>
 
-            <button
-              className="proj-page-button"
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={page >= totalPages || loading}
               onClick={() => void load(page + 1)}
             >
               下一页
-            </button>
+            </Button>
           </div>
         </>
       )}
 
-      {previewError !== null && <p className="gen-error">{previewError}</p>}
+      {previewError !== null && <p className={styles.error}>{previewError}</p>}
     </section>
   )
 }

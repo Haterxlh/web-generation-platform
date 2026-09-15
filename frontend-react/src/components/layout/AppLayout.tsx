@@ -1,6 +1,7 @@
 import { Link, NavLink, Outlet } from 'react-router-dom'
 
 import { useAuth } from '@/hooks/auth_context'
+import styles from './AppLayout.module.css'
 
 const navItems = [
   { to: '/', label: '首页', end: true },
@@ -18,17 +19,19 @@ export default function AppLayout() {
   }
 
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <span className="app-logo">Web 生成平台</span>
+    <div className={styles.shell}>
+      <header className={styles.header}>
+        <span className={styles.logo}>Web 生成平台</span>
 
-        <nav className="app-nav">
+        <nav className={styles.nav}>
           {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.end}
-              className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
+              className={({ isActive }) =>
+                isActive ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink
+              }
             >
               {item.label}
             </NavLink>
@@ -36,21 +39,21 @@ export default function AppLayout() {
         </nav>
 
         {/* 用户区：未登录显示入口，已登录显示账号 + 退出 */}
-        <div className="app-user">
+        <div className={styles.user}>
           {isAuthenticated && user !== null ? (
             <>
               {/* user_name 后端允许为 null，回退到账号显示 */}
-              <span className="app-user-name">{user.user_name ?? user.user_account}</span>
-              <button className="app-user-button" type="button" onClick={handleLogout}>
+              <span className={styles.userName}>{user.user_name ?? user.user_account}</span>
+              <button className={styles.userButton} type="button" onClick={handleLogout}>
                 退出
               </button>
             </>
           ) : (
             <>
-              <Link className="app-user-link" to="/login">
+              <Link className={styles.userLink} to="/login">
                 登录
               </Link>
-              <Link className="app-user-link" to="/register">
+              <Link className={styles.userLink} to="/register">
                 注册
               </Link>
             </>
@@ -58,11 +61,11 @@ export default function AppLayout() {
         </div>
       </header>
 
-      <main className="app-main">
+      <main className={styles.main}>
         <Outlet />
       </main>
 
-      <footer className="app-footer">Web 生成平台 · React + FastAPI</footer>
+      <footer className={styles.footer}>Web 生成平台 · React + FastAPI</footer>
     </div>
   )
 }

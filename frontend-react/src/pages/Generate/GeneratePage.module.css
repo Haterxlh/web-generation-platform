@@ -1,0 +1,5 @@
+/* 生成页（对应 GeneratePage.tsx）：只负责页面级排版，组件各自的样式在各自 module 里 */
+
+.section {
+  padding-bottom: 8px;
+}

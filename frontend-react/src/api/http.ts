@@ -22,6 +22,12 @@ interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   /** 请求体（对象，自动 JSON 序列化） */
   body?: unknown
+  /**
+   * multipart 上传用的表单体（与 body 互斥）。
+   * ⚠️ 走 formData 时**绝不能手写 Content-Type**：boundary 由浏览器生成，
+   * 手写成 `multipart/form-data` 会丢掉 boundary，后端直接 422。
+   */
+  formData?: FormData
   /** 附加请求头 */
   headers?: HeadersInit
   signal?: AbortSignal
@@ -57,19 +63,22 @@ function extractErrorMessage(payload: unknown, status: number): string {
 
 /** 发起 JSON 请求并解析响应；非 2xx 时抛出 ApiError */
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, headers, signal } = options
+  const { method = 'GET', body, formData, headers, signal } = options
 
   // 已登录则自动附加 Bearer token，页面组件无须关心鉴权头
   const token = getToken()
 
+  // 上传走 multipart：不设 Content-Type（浏览器补 boundary），body 直接给 FormData
+  const isUpload = formData !== undefined
+
   const response = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isUpload ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: isUpload ? formData : body === undefined ? undefined : JSON.stringify(body),
     signal,
   })
 

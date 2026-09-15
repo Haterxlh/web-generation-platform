@@ -3,7 +3,7 @@
 > 本文件是**实施计划与验收清单**，随步骤推进逐项打勾。它回答"**怎么改**"；
 > "改完后的最终约定"在全部完成后回写到 `docs/generation_module_design.md`。
 >
-> **最近更新时间：2026-09-15（阶段 7 完成）**
+> **最近更新时间：2026-09-15（阶段 8 完成，一期全部落地）**
 >
 > **版本说明**
 > - **v2（本版）**：范围从"generation 模块工具化"扩展为**平台级 Agent 框架** ——
@@ -1006,7 +1006,7 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   - 本次留下临时账号 `cmp7407438c72`（user_id=14，冒烟）与 `cmpb7b1ad8703`（user_id=15，正式）
     及其 10 条任务与产物，如需清理请手动处理。
 
-### 阶段 8｜前端对接
+### 阶段 8｜前端对接 —— ✅ 已完成（2026-09-15）
 - **产出**：会话式 Generate 页（聊天区 + 附件上传 + 需求确认卡片 + 阶段进度条 + 别名 chip）、
   `src/api/agent_api.ts`、`src/types/agent_types.ts`
 - **要点**：阶段 0 已先把轮询做掉，本阶段做的是**交互形态升级**
@@ -1014,6 +1014,73 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   1. **默认 `gen_type` 切到 `agent`**，界面上的"单文件 / 多文件"改成
      "Agent 生成（默认）/ 单页极速（single）"；**不要再暴露 `multi`**（已 deprecated）；
   2. 提交后要能区分**失败**与**停在 `clarifying` 等用户补充**（后者不是失败，不能报红）。
+- **实际交付与偏差（2026-09-15）**：
+  - 交付：`src/pages/Generate/`（`GeneratePage` + `ChatPanel` + `AttachmentChips` + `RequirementCard` +
+    `GenerationProgress` + `QuickGenerateForm` + 各自 `*.module.css` + `generate_utils.ts`）、
+    `src/api/agent_api.ts`、`src/types/agent_types.ts`、`src/hooks/useGenerationRunner.ts`、
+    `src/utils/agent_session.ts`、`src/components/common/{Button,AuthCard,AuthField}.tsx`；
+    两条硬要求均已落地（默认 agent；`clarifying` 用警示色渲染并**停止轮询**）
+  - **补齐的过期契约**（不补就写不下去）：`generation_types.ts` 的 `GenType` 缺 `'agent'`、
+    `AgentStage` 缺 `'clarifying'`、`GenerateRequest` 缺 `session_uuid`；
+    `http.ts` 只支持 JSON body，**multipart 需要一条新分支**（走 FormData 时不能手写 `Content-Type`，
+    否则 boundary 丢失、后端 422）
+  - **偏差 1：附件上传必须"先有会话"** —— 别名作用域是会话，后端 `upload` 要求 `session_uuid` 存在。
+    界面上如实反映：没有会话时上传按钮禁用 + 提示"先发一条消息"（不假装可以上传再静默失败）
+  - **偏差 2：刷新回放的"可生成"判据只能前端重算** —— 会话详情接口不返回 `ready_to_generate`，
+    因此按后端 `REQUIRED_SLOTS = ("site_kind","features")` 同一口径重算。**这是两处硬编码**，
+    后端改必备槽位时前端必须同步（已在代码注释标注）
+  - **偏差 3：会话恢复不新增后端接口** —— 后端没有"会话列表"，V1 把 `session_uuid` 存 localStorage
+    + `GET /agent/session/{uuid}` 回放；代价是只能恢复"最近一个"会话，登出时与 token 一起清
+  - **偏差 4（用户要求）：把 `global.css` 按组件拆分** —— 它已涨到 575 行、混着 5 个页面的类名。
+    现在只留设计变量 / 重置 / 页面通用排版，其余下沉到 `*.module.css`（详见 `frontend-react/README.md`）
+  - **偏差 5（用户实测发现，前端 bug，同日修复）：提交的 `prompt` 不能夹带闲聊** ——
+    前端最初把"第一条用户消息"附在 prompt 末尾当上下文，而用户开场正是"你能做什么？"；
+    **worker 的 ROUTING 只读 `task.prompt`（拿不到会话历史，见 `agent_generation_service.execute`）**，
+    于是把整段读成能力咨询、判定信息不足，任务停在 `clarifying` ——
+    用户刚对着确认卡片点过"开始生成"却被说"信息不够"。
+    修复：prompt 只由槽位拼成自洽完整句子（与确认卡片同源），用户原话仅在槽位拼不出东西时兜底，
+    且取**最后一条**（`lastUserText`）。已用真实模型复现验证：同一输入由 `clarifying` 变为
+    `success`（66629ms）。
+    **沉淀的契约**：`create` 的 `prompt` 会被 ROUTING 当作需求本身参与完备度判定，
+    调用方必须让它**独立自洽**，不能塞"上下文"类内容。
+  - **偏差 6（按用户决定，同日实施）：把会话需求草稿接进 worker 侧** ——
+    `orchestrator.run` 一直有 `slots` / `draft_summary` 两个参数，但 `AgentGenerationService.execute`
+    **从来没传过**，于是：① worker 的 ROUTING 只看到一句 prompt；② **⑩ need_rag 与 ⑪ merge
+    也一直拿到空的草稿摘要**（§3.5 里"MERGE 输入优先级第 2 位 = chat-agent 澄清摘要"从未生效）。
+    本次改动：新增 `_load_session()`（会话只查一次，含排队期间的归属复核）、`_load_draft()`
+    （把草稿解析成 slots + summary，脏数据按"没有草稿"处理并记警告）、
+    `_load_sources()` 改为接收已载入的会话；解析口径抽到 `state.parse_draft()`，
+    与 `AgentChatService` 共用一份（避免两处漂移）。
+    **实测结论（三案例对照，进程内真模型）**：
+
+    | 案例 | prompt | 会话草稿 | 结果 |
+    |---|---|---|---|
+    | ① | 被污染（含"你能做什么？"） | 不传（= 修复前） | `clarifying`（失败模式可从后端单独复现） |
+    | ② | 被污染 | **传**（本次改动） | **仍 `clarifying`** |
+    | ③ | 干净（前端修复后的形态） | 传 | `success`（4 文件 / medium / 2 步 / 74.3s） |
+
+    ⚠️ **诚实结论：本次改动对齐了上下文，但**不能单独**挡住被污染的 prompt** ——
+    router 的设计就是要识别"用户在问能力"，而文本里确实还写着"你能做什么？"。
+    所以那个 bug 的**实际修复是前端把 prompt 写成自洽需求**（案例③）；
+    本改动的独立价值在于让 ⑩ need_rag 与 ⑪ merge 拿到用户已确认的 slots/summary。
+    **据此不追加"草稿齐备就放行"的 Python 兜底**：它会削弱生成路径唯一的完备度防线，
+    而触发条件（prompt 夹带闲聊）已在前端消除。真正对症的规范是下面这条契约。
+  - **沉淀的契约（写进 `generation_module_design.md` §5.2）**：`create` 的 `prompt` 会被
+    worker 的 ROUTING 当作**用户需求原文**参与完备度判定；worker 只有它 + 会话草稿 + 附件 digest，
+    **没有对话历史**。因此调用方必须让 prompt **独立自洽**，不得夹带闲聊或"上下文"类内容。
+  - **验证情况**：`npm run lint` / `typecheck` / `build` 全绿（62 modules，313.87 kB JS / 14.49 kB CSS）；
+    Vite dev server 逐个编译新模块均 200；
+    **HTTP 层端到端（按前端实际调用顺序与载荷，真实模型）**：
+    模糊需求 chat → `needs_clarification`；multipart 上传 `.md`（字段名 `session_uuid`/`file`）→ `@doc1`；
+    `source/list` 返回别名与文件名；带附件 chat → `ready=True` 且 **style 槽位取自文档**
+    （"极简风格，白色背景，元素统一 8px 圆角"）；会话回放 4 条消息角色正确；
+    `create(gen_type=agent, session_uuid)` **202** → `routing 10% → retrieving 40% → planning 55% →
+    generating 70% → done 100%` → `success` / 20552ms / 3 文件 → 签票 + 预览 **HTTP 200**
+  - **已知代价 / 遗留**：浏览器内的交互与观感**仍需人工点一遍**（人工验证清单在
+    `frontend-react/docs/proj_progress.md` 的「会话式生成页」模块）；
+    历史消息里的 `@docN` chip 不会在刷新后重现（会话详情接口不返回消息级 attachments，设计如此）；
+    无会话列表接口；前端仍无自动化测试
+
 
 ---
 
@@ -1100,6 +1167,9 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
 | 2026-09-15 | 阶段 7：`multi` 复杂需求产物诊断 | r3（企业官网四页 + 数据文件） | 交付 `index.html`+`style.css`+`script.js`，但入口里 9 处 `href` 指向 `products.html` / `about.html` / `contact.html` —— **三个页面从未生成**，导航全是死链（预览 HTTP 200 也掩盖不了） | **通过（判为缺陷）** —— 证明"HTTP 200 + 有产物"不等于交付可用，必须查引用完整性 |
 | 2026-09-15 | 阶段 7：判据假阳性与离线重判 | 第一版 `_local_refs()` 扫全文本 | `r3/single`（单文件官网）把 JS 模板串 `${esc(p.image)}` 当成缺失文件 → 误判不完整；修正为"只扫标记语言、跳过 script/style 正文与模板表达式"后重判为**完整**，且 `multi` 的死链结论不变 | **通过** —— 并因此把"判据可离线重判"做成 `--recheck`：修正判据不必重跑模型 |
 | | 阶段 8：前端对接（会话式 Generate 页） | | | |
+| 2026-09-15 | 阶段 8：前端契约与端到端（真实 API + worker + 真实模型） | 按前端**实际调用顺序与载荷**：chat → multipart 上传 `.md` → `source/list` → 带附件 chat → 会话回放 → `create(agent, session_uuid)` → 轮询 → 签票预览 | 模糊需求 `needs_clarification`；上传得 `@doc1`（`parse_status=success`）；带附件 chat `ready=True` 且 **style 槽位取自文档**；回放 4 条消息角色正确；create **202** → `routing→retrieving→planning→generating→done` → `success` 20552ms / 3 文件 → 预览 **HTTP 200** | **通过** —— 前端契约（含 multipart 字段名）与后端一致；`lint`/`typecheck`/`build` 全绿 |
+| ✅ | 阶段 8：前端对接 —— **已完成（2026-09-15）** | — | — | — |
+| 2026-09-15 | 阶段 8：**两处 router 的上下文核查**（用户提出） | 读码 + 三案例实测（进程内真模型） | API 侧 `intent_router` 与 `chat-agent` 拿到**同一份 history**（同一对象、同一预算）；worker 侧 ROUTING **只拿 prompt**（history 空、attachments 空、slots 此前也没传）。案例①污染 prompt+无草稿→`clarifying`；②污染+有草稿→**仍 `clarifying`**；③干净+有草稿→`success` | **部分通过** —— 会话草稿已接上（need_rag/merge 受益），但它**不能单独**挡住被污染的 prompt；bug 的实际修复在前端 prompt |
 
 ---
 

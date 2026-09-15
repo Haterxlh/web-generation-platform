@@ -1,0 +1,83 @@
+/* 可折叠的"极速生成（单页）"表单（对应 QuickGenerateForm.tsx） */
+
+.wrapper {
+  margin-top: 20px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.summary {
+  padding: 14px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.summary::before {
+  content: '▸ ';
+  color: var(--color-text-muted);
+}
+
+.wrapper[open] .summary::before {
+  content: '▾ ';
+}
+
+.body {
+  padding: 0 20px 20px;
+}
+
+.desc {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--color-text-muted);
+}
+
+.textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+.counter {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  text-align: right;
+  color: var(--color-text-muted);
+}
+
+.submitRow {
+  margin-top: 14px;
+}
+
+.error {
+  margin: 14px 0 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+}

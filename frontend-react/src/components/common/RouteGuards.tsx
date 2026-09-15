@@ -7,10 +7,11 @@ import { Navigate, useLocation } from 'react-router-dom'
 
 import { useAuth } from '@/hooks/auth_context'
 import { intendedPath } from '@/utils/navigation'
+import styles from './RouteGuards.module.css'
 
-/** 恢复登录态时的占位界面（复用登录页的居中样式，省一套 CSS） */
+/** 恢复登录态时的占位界面（全屏居中，避免"未登录 → 登录页 → 又跳回"的闪烁） */
 function AuthLoading() {
-  return <div className="auth-page">正在恢复登录状态…</div>
+  return <div className={styles.loading}>正在恢复登录状态…</div>
 }
 
 /** 需要登录才能访问：未登录时跳转登录页，并记住原本要去的路径 */

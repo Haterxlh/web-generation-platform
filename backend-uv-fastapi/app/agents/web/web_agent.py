@@ -18,6 +18,7 @@
 
 import json
 import logging
+import time
 from collections.abc import Callable, Sequence
 from typing import Annotated, Any, TypedDict
 
@@ -45,9 +46,29 @@ NO_PROGRESS_LIMIT = 3
 # 门禁不通过时最多补缺几轮（第 1 轮 + 2 轮补缺）
 MAX_REPAIR_ROUNDS = 2
 
+# 单轮模型调用的重试次数（不含首次）。
+# ⚠️ 为什么必须重试：一次生成要调模型 3~6 轮，每轮都把整段历史重发一遍（实测单次生成
+# 输入 token 可达 10 万+）。**任何一次**网络抖动 / 5xx / 超时都会命中这里 ——
+# 若把它当致命错误，就等于"跑了 100 秒、文件都写好一半，因为一次抖动全废"
+# （2026-09-15 真实发生：第 2 步调用失败 → 门禁判缺件 → 用户看到"生成的文件不完整"）。
+# 重试很便宜（只重发那一轮），且 LLM 调用无副作用，可以放心重试。
+MODEL_CALL_RETRIES = 2
+
+# 重试之间的退避基数（秒）：第 n 次重试前等 n * 该值
+RETRY_BACKOFF_SECONDS = 1.5
+
 # 默认客户端：**思考模式**（方案 §2.1：思考模式可自然调用工具，且循环把预算压力摊薄到多次调用）。
 # 该默认值由自检数据确认，可将 `thinking=False` 切到非思考客户端。
 DEFAULT_THINKING = True
+
+# 会**阻止补缺轮**的刹车原因：预算类刹车再补一轮只会撞同一面墙。
+# ⚠️ 刻意**不含 "error"**：模型调用失败是外部抖动，值得再给一轮机会。
+_BUDGET_STOP_REASONS = frozenset({"max_steps", "token_budget", "no_progress"})
+
+# 因"模型调用失败"而额外允许的补缺轮数。
+# 给 1 轮而不是用满 max_repair_rounds：抖动值得再试一次，但**模型整体不可用**时
+# 连开 2 轮补缺只会把 3 次重试 × 2 轮的等待时间白白烧掉（每次都要真实等待与计费）。
+MAX_ERROR_REPAIR_ROUNDS = 1
 
 
 class WebAgentResult(BaseModel):
@@ -110,6 +131,7 @@ def generate(
     max_steps: int | None = None,
     max_output_tokens: int | None = None,
     max_repair_rounds: int = MAX_REPAIR_ROUNDS,
+    retry_backoff_seconds: float = RETRY_BACKOFF_SECONDS,
     on_step: Callable[[int, str], None] | None = None,
 ) -> WebAgentResult:
     """按交付清单生成文件（模型自主调用工具），并在门禁不通过时定向补缺。
@@ -128,6 +150,7 @@ def generate(
         max_steps: 模型轮数上限；默认取 `plan.difficulty` 的预算。
         max_output_tokens: 输出 token 预算；默认取 `plan.difficulty` 的预算。
         max_repair_rounds: 门禁不通过时最多补缺几轮。
+        retry_backoff_seconds: 模型调用失败后重试的退避基数（测试传 0 以免真等）。
         on_step: 每步回调（用于推进阶段 / 打日志）；回调异常不影响生成。
 
     Returns:
@@ -183,13 +206,32 @@ def generate(
             return {"messages": [AIMessage(content="[预算] 连续多轮没有进展，收工。", id="budget-stop")]}
 
         counters["steps"] += 1
-        try:
-            response = active_model.invoke(state["messages"])
-        except Exception as error:  # noqa: BLE001 —— 单轮调用失败不该毁掉已有产物
+        response = None
+        for attempt in range(MODEL_CALL_RETRIES + 1):
+            try:
+                response = active_model.invoke(state["messages"])
+                break
+            except Exception as error:  # noqa: BLE001 —— 单轮调用失败不该毁掉已有产物
+                if attempt >= MODEL_CALL_RETRIES:
+                    stop_reason = "error"
+                    degraded = True
+                    warnings.append(
+                        f"第 {counters['steps']} 步模型调用失败（已重试 {MODEL_CALL_RETRIES} 次）："
+                        f"{type(error).__name__}: {error}"
+                    )
+                    return {"messages": [AIMessage(content=f"[错误] {error}", id="model-error")]}
+                # 退避后重试：抖动是常态，把整次生成废掉才是真损失
+                warnings.append(
+                    f"第 {counters['steps']} 步模型调用失败，准备第 {attempt + 1} 次重试："
+                    f"{type(error).__name__}: {error}"
+                )
+                if retry_backoff_seconds > 0:
+                    time.sleep(retry_backoff_seconds * (attempt + 1))
+
+        if response is None:  # pragma: no cover —— 上面的循环必然要么 return 要么赋值
             stop_reason = "error"
             degraded = True
-            warnings.append(f"第 {counters['steps']} 步模型调用失败：{type(error).__name__}: {error}")
-            return {"messages": [AIMessage(content=f"[错误] {error}", id="model-error")]}
+            return {"messages": [AIMessage(content="[错误] 模型未返回结果", id="model-error")]}
 
         counters["usage"] = counters["usage"] + ModelUsage.from_message(response)
         detail = _describe_turn(response, counters["steps"])
@@ -216,6 +258,7 @@ def generate(
 
     messages: list[AnyMessage] = _build_messages(plan, requirement)
     rounds = 0
+    error_repairs = 0
     # 补缺轮：门禁不过就把"还缺哪些文件"作为指令再进一次循环（同一 store、同一预算）
     for round_index in range(max_repair_rounds + 1):
         rounds = round_index + 1
@@ -225,13 +268,20 @@ def generate(
         missing = store.missing(plan.names())
         if not missing:
             break
-        if round_index >= max_repair_rounds or stop_reason != "done":
+        if round_index >= max_repair_rounds or stop_reason in _BUDGET_STOP_REASONS:
             break
+        if stop_reason == "error":
+            error_repairs += 1
+            if error_repairs > MAX_ERROR_REPAIR_ROUNDS:
+                break
         if counters["steps"] >= step_limit or counters["usage"].output_tokens >= token_limit:
             break
         warnings.append(f"第 {rounds} 轮未交付完整，开始补缺：缺 {missing}")
         messages = _build_messages(plan, requirement, repair_missing=missing)
         counters["no_progress"] = 0
+        # ⚠️ 必须把刹车原因清回 done：`_should_continue` 一看到 stop_reason != "done" 就直接 END，
+        # 上一轮因模型调用失败留下的 "error" 会让新的一轮在第一个节点就退出（补缺等于没补）
+        stop_reason = "done"
 
     missing = store.missing(plan.names())
     extra = [name for name in store.names() if name not in set(plan.names())]

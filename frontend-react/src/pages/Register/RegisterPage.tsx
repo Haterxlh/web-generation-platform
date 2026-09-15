@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import type { SubmitEvent } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { ApiError } from '@/api/http'
+import AuthCard from '@/components/common/AuthCard'
+import AuthField from '@/components/common/AuthField'
 import { useAuth } from '@/hooks/auth_context'
 import { intendedPath } from '@/utils/navigation'
 
@@ -62,57 +64,41 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="auth-page">
-      <form className="auth-card" onSubmit={handleSubmit}>
-        <h1 className="auth-title">注册</h1>
-        <p className="auth-subtitle">创建一个账号，开始生成你的 Web 应用</p>
-
-        {/* 条件渲染：只有有错误时才渲染这一段 */}
-        {error !== null && <p className="auth-error">{error}</p>}
-
-        <label className="auth-field">
-          <span className="auth-label">账号</span>
-          <input
-            className="auth-input"
-            value={account}
-            onChange={(event) => setAccount(event.target.value)}
-            placeholder="2~32 位"
-            autoComplete="username"
-          />
-        </label>
-
-        <label className="auth-field">
-          <span className="auth-label">密码</span>
-          <input
-            className="auth-input"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="至少 6 位"
-            autoComplete="new-password"
-          />
-        </label>
-
-        <label className="auth-field">
-          <span className="auth-label">确认密码</span>
-          <input
-            className="auth-input"
-            type="password"
-            value={confirmPassword}
-            onChange={(event) => setConfirmPassword(event.target.value)}
-            placeholder="再输一次密码"
-            autoComplete="new-password"
-          />
-        </label>
-
-        <button className="auth-button" type="submit" disabled={submitting}>
-          {submitting ? '注册中…' : '注册'}
-        </button>
-
-        <p className="auth-switch">
-          已有账号？<Link to="/login">去登录</Link>
-        </p>
-      </form>
-    </div>
+    <AuthCard
+      title="注册"
+      subtitle="创建一个账号，开始生成你的 Web 应用"
+      error={error}
+      submitLabel="注册"
+      submittingLabel="注册中…"
+      submitting={submitting}
+      switchText="已有账号？"
+      switchTo="/login"
+      switchLabel="去登录"
+      onSubmit={handleSubmit}
+    >
+      <AuthField
+        label="账号"
+        value={account}
+        onChange={setAccount}
+        placeholder="2~32 位"
+        autoComplete="username"
+      />
+      <AuthField
+        label="密码"
+        type="password"
+        value={password}
+        onChange={setPassword}
+        placeholder="至少 6 位"
+        autoComplete="new-password"
+      />
+      <AuthField
+        label="确认密码"
+        type="password"
+        value={confirmPassword}
+        onChange={setConfirmPassword}
+        placeholder="再输一次密码"
+        autoComplete="new-password"
+      />
+    </AuthCard>
   )
 }

@@ -1,0 +1,104 @@
+/* 项目列表页（对应 ProjectsPage.tsx） */
+
+.error {
+  margin: 16px 0 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 关键：flex 子项默认 min-width:auto，长需求文本会把卡片撑破，必须显式归零 */
+.main {
+  min-width: 0;
+}
+
+.prompt {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.statusSuccess {
+  color: var(--color-success);
+  background: var(--color-success-bg);
+}
+
+.statusRunning {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
+.statusFailed {
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+}
+
+.fail {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+}
+
+.empty {
+  margin: 24px 0 0;
+  font-size: 14px;
+  color: var(--color-text-muted);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.pageInfo {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}

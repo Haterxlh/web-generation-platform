@@ -220,6 +220,14 @@ def run(
         # 门禁不过 = 交付不完整：**必须失败**，不能把半成品当成功（§3.8.6）
         missing_text = "、".join(web_result.missing)
         emit(AgentStage.FAILED, f"交付不完整，缺少：{missing_text}")
+        # ⚠️ 刹车原因要写进给用户看的那句话里：stop_reason=error（模型调用失败）与
+        # 模型自己收工不写，是两种完全不同的故障 —— 只说"文件不完整"会把用户引向
+        # "重试就好"的猜测，而真正的线索（第几步、什么错）在 _debug_meta.json 里。
+        reason_text = (
+            f"；期间第 {web_result.steps_used} 步模型调用失败（已重试）"
+            if web_result.stop_reason == "error"
+            else ""
+        )
         return OrchestratorResult(
             status="failed",
             usage=usage,
@@ -230,7 +238,7 @@ def run(
             stages=stages,
             warnings=warnings,
             error_message=(
-                f"生成的文件不完整（缺少：{missing_text}）；"
+                f"生成的文件不完整（缺少：{missing_text}）{reason_text}；"
                 f"已尝试 {web_result.rounds} 轮、共 {web_result.steps_used} 步"
             ),
         )

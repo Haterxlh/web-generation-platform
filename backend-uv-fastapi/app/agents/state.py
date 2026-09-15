@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.agents.common import ModelUsage
 
@@ -185,6 +185,29 @@ class ChatResult(BaseModel):
     reply: str = ""
     degraded: bool = False
     usage: ModelUsage = Field(default_factory=ModelUsage)
+
+
+def parse_draft(value: Mapping[str, Any] | None) -> tuple["RequirementDraft", str | None]:
+    """把库里存的 ``agent_session.draft_requirement`` 还原成 :class:`RequirementDraft`。
+
+    为什么放在这里而不是各 service 各写一份：这份草稿现在有**两个读者** ——
+    对话路径（`AgentChatService`，每轮读写）与生成路径（`AgentGenerationService`，
+    阶段 8 起把它交给 worker 的 ROUTING / need_rag / merge，让两处判定看到同一份需求）。
+    解析口径一旦漂移，"用户确认过的需求"和"生成时看到的需求"就会悄悄不一致。
+
+    Args:
+        value: JSONB 列读回来的字典；None 或空表示还没有草稿。
+
+    Returns:
+        ``(草稿, 警告)``：没有草稿时返回空草稿且不告警；**数据不合法时返回空草稿 + 原因**
+        （调用方决定是记日志还是进 warnings —— 但绝不抛异常：脏数据不该拖垮一轮对话或一次生成）。
+    """
+    if not value:
+        return RequirementDraft(), None
+    try:
+        return RequirementDraft.model_validate(value), None
+    except ValidationError as error:
+        return RequirementDraft(), f"{type(error).__name__}: {error}"
 
 
 def digest_one_line(value: "RequirementDigest | Mapping[str, Any] | None") -> str | None:

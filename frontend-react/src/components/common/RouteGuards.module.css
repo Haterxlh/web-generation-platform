@@ -1,0 +1,10 @@
+/* 路由守卫的等待占位（对应 RouteGuards.tsx） */
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-size: 14px;
+  color: var(--color-text-muted);
+}

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.agents import orchestrator
 from app.agents.plan.plan_agent import PlanResult
 from app.agents.stages import AgentStage
-from app.agents.state import FinalRequirement, RequirementDigest
+from app.agents.state import FinalRequirement, RequirementDigest, RequirementSlots, parse_draft
 from app.core.pg_db import PgSessionLocal
 from app.models.agent import AgentSession, GenerationPlan, GenerationSource
 from app.models.generation_task import GenerationTask
@@ -31,7 +31,7 @@ from app.repositories.agent import (
     GenerationSourceRepository,
 )
 from app.services.generation_service import GenerationService
-from app.utils.weg_gen.file_writer import write_debug_trace, write_files
+from app.utils.weg_gen.file_writer import write_debug_meta, write_debug_trace, write_files
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,12 @@ class AgentGenerationService:
         pg = PgSessionLocal()
         plan_row: GenerationPlan | None = None
         try:
-            digests, attach_warnings = AgentGenerationService._load_sources(pg, task)
+            # ⚠️ 会话只查一次：附件与需求草稿都从它来（草稿是"用户已确认的需求"，
+            # 见下方传给 orchestrator 的 slots / draft_summary）
+            session = AgentGenerationService._load_session(pg, task)
+            digests, attach_warnings = AgentGenerationService._load_sources(pg, task, session)
+            slots, draft_summary, draft_warnings = AgentGenerationService._load_draft(session)
+            warnings_seed = [*attach_warnings, *draft_warnings]
 
             def _on_stage(stage: AgentStage, detail: str) -> None:
                 # 阶段推进走既有 _set_stage：它会同时刷新 updateTime（僵尸回收靠它判断心跳）
@@ -90,11 +95,18 @@ class AgentGenerationService:
                 nonlocal plan_row
                 plan_row = AgentGenerationService._save_plan(pg, task, plan_result, requirement)
 
+            # ⚠️ slots / draft_summary 必须传：worker 侧 **拿不到会话历史**，
+            # 若只给一句 prompt，ROUTING 就会脱离"用户已确认的槽位"重新判一遍完备度
+            # （2026-09-15 的真实 bug：开场问过"你能做什么"就足以让整段被读成能力咨询、
+            # 任务停在 clarifying）。这两个参数同时是 ⑩ need_rag 与 ⑪ merge 的输入，
+            # 所以它们此前在 agent 路径上一直是空的（§3.5 的"MERGE 输入优先级第 2 位"从未生效）。
             result = orchestrator.run(
                 task.prompt,
                 user_id=task.user_id,
+                slots=slots,
+                draft_summary=draft_summary,
                 digests=digests,
-                attach_warnings=attach_warnings,
+                attach_warnings=warnings_seed,
                 on_stage=_on_stage,
                 on_plan=_on_plan,
             )
@@ -116,14 +128,63 @@ class AgentGenerationService:
     # ==================== 内部工具 ====================
 
     @staticmethod
+    def _load_session(pg: Session, task: GenerationTask) -> AgentSession | None:
+        """取来源会话（附件与需求草稿都挂在它上面），并**再挡一次归属**。
+
+        建任务时已校验过归属（`validate_session`），这里再查一次是因为：
+        任务可能排队很久才被 worker 执行，期间会话可能被删或换主 ——
+        那时**一条附件、一个字的需求草稿都不该读**。
+
+        Args:
+            pg: PG 会话。
+            task: 任务对象（用它的 session_uuid / user_id）。
+
+        Returns:
+            会话对象；没传会话、会话不存在或不属于当前用户时返回 None。
+        """
+        if not task.session_uuid:
+            return None
+        session: AgentSession | None = AgentSessionRepository.get_by_uuid(pg, task.session_uuid)
+        if session is None or session.user_id != task.user_id:
+            return None
+        return session
+
+    @staticmethod
+    def _load_draft(
+        session: AgentSession | None,
+    ) -> tuple[RequirementSlots | None, str, list[str]]:
+        """读会话里**用户已确认的需求草稿**，交给 worker 侧的 ROUTING / need_rag / merge。
+
+        ⚠️ 这是"两处判定看到同一份需求"的关键（2026-09-15 修的 bug）：
+        worker 拿不到会话历史，只给 prompt 的话，ROUTING 会脱离已确认的槽位重新判一遍，
+        于是出现"用户在界面上确认过、任务却停在 clarifying"的自相矛盾。
+
+        Args:
+            session: 来源会话；None 表示不基于会话生成。
+
+        Returns:
+            ``(槽位, 摘要, 警告)``：没有草稿时返回 ``(None, "", [])``
+            （None 与"空槽位对象"在提示词里渲染不同：前者是"这是第一轮，还没有任何槽位"）。
+        """
+        if session is None or not session.draft_requirement:
+            return None, "", []
+
+        draft, warning = parse_draft(session.draft_requirement)
+        if warning is None:
+            return draft.slots, draft.summary, []
+        # 脏草稿按"没有草稿"处理，但必须留痕 —— 否则用户确认过的需求悄悄消失，无从归因
+        return None, "", [f"会话需求草稿无法解析，已忽略：{warning}"]
+
+    @staticmethod
     def _load_sources(
-        pg: Session, task: GenerationTask
+        pg: Session, task: GenerationTask, session: AgentSession | None
     ) -> tuple[list[tuple[str, RequirementDigest]], list[str]]:
         """按会话取回附件 digest（**上传时已算好，这里只消费不再计费**）。
 
         Args:
             pg: PG 会话。
-            task: 任务对象（用它的 session_uuid / user_id）。
+            task: 任务对象（只用来判断"是否基于会话生成"）。
+            session: 已载入的来源会话（由 `_load_session` 提供，避免重复查询）。
 
         Returns:
             (digests, 警告)：``(别名, digest)`` 列表与解析失败等非致命问题。
@@ -131,9 +192,8 @@ class AgentGenerationService:
         if not task.session_uuid:
             return [], []
 
-        session: AgentSession | None = AgentSessionRepository.get_by_uuid(pg, task.session_uuid)
-        if session is None or session.user_id != task.user_id:
-            # 建任务时已校验过归属；这里再挡一次，避免会话被删/换主后仍然读数据
+        if session is None:
+            # 建任务时已校验过归属；这里是"排队期间会话被删/换主"的兜底
             return [], ["来源会话不存在或不属于当前用户，已忽略附件"]
 
         warnings: list[str] = []
@@ -223,6 +283,27 @@ class AgentGenerationService:
         web_result = getattr(result, "web_result", None)
         if web_result is not None:
             write_debug_trace(task.user_id, task.task_uuid, getattr(web_result, "trace_jsonl", None))
+        # ⚠️ 结构化诊断必须落盘（2026-09-15 的教训）：
+        # 失败原因常常藏在 warnings 里（如"第 2 步模型调用失败：TimeoutError"），
+        # 而用户看到的只是"生成的文件不完整（缺少 xxx）"—— 没有这个文件就只能重放整条流水线去猜
+        write_debug_meta(
+            task.user_id,
+            task.task_uuid,
+            {
+                "status": status,
+                "error_message": message,
+                "stop_reason": getattr(web_result, "stop_reason", None),
+                "steps_used": getattr(web_result, "steps_used", None),
+                "rounds": getattr(web_result, "rounds", None),
+                "missing": list(getattr(web_result, "missing", []) or []),
+                "usage": {
+                    "input_tokens": getattr(usage, "input_tokens", 0),
+                    "output_tokens": getattr(usage, "output_tokens", 0),
+                    "reasoning_tokens": getattr(usage, "reasoning_tokens", 0),
+                },
+                "warnings": list(getattr(result, "warnings", []) or []),
+            },
+        )
         GenerationService._fail(db, task, message, started, usage=usage)
 
     @staticmethod

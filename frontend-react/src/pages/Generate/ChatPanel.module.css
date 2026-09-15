@@ -1,0 +1,201 @@
+/* 聊天区（对应 ChatPanel.tsx）：消息列表 + 待发送附件 + 输入框 */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  margin-top: 20px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.headTitle {
+  margin: 0;
+  font-size: 15px;
+}
+
+.headMeta {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* 头部里的文字按钮（如"开始新会话"）：低调，不抢主操作的注意力 */
+.linkButton {
+  padding: 0;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--color-primary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.linkButton:hover {
+  text-decoration: underline;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 460px;
+  min-height: 180px;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.empty {
+  margin: auto;
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.9;
+  color: var(--color-text-muted);
+}
+
+.row {
+  display: flex;
+}
+
+.rowUser {
+  justify-content: flex-end;
+}
+
+.bubble {
+  max-width: 78%;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: var(--radius);
+}
+
+.bubbleUser {
+  color: #fff;
+  background: var(--color-primary);
+  border-bottom-right-radius: 4px;
+}
+
+.bubbleAssistant {
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-bottom-left-radius: 4px;
+}
+
+/* 系统提示（如附件解析失败）：不冒充助手的话，用中性警示色区分 */
+.bubbleNotice {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border: 1px solid #fde68a;
+}
+
+.bubbleAttachments {
+  margin-bottom: 8px;
+}
+
+.composer {
+  padding: 14px 18px 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.composerRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.textarea {
+  flex: 1;
+  min-height: 46px;
+  max-height: 140px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.fileLabel {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.fileLabel:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* 上传不可用时（还没有会话）给个明确的"不可点"外观 */
+.fileLabelDisabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.fileLabelDisabled:hover {
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+
+/* 隐藏原生 file input：用上面的 label 触发，样式才可控 */
+.fileInput {
+  display: none;
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.error {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+}
+
+.pending {
+  margin-bottom: 10px;
+}

@@ -284,16 +284,100 @@ def test_writes_reset_no_progress_counter() -> None:
 
 
 def test_model_exception_keeps_partial_files() -> None:
-    """⚠️ 单轮调用抛异常 → 停止并记为 error，但**已经写好的文件不丢**。"""
+    """⚠️ 单轮调用反复失败（重试也用尽）→ 停止并记为 error，但**已经写好的文件不丢**。"""
     model = BrokenModel(fail_after=1)
 
-    result = web_agent.generate(PLAN_3, REQUIREMENT, model=model)
+    result = web_agent.generate(PLAN_3, REQUIREMENT, model=model, retry_backoff_seconds=0)
 
     assert result.stop_reason == "error"
     assert result.degraded is True
     assert result.files == {"index.html": "<html></html>"}
     assert result.gate_passed is False
-    assert any("模型调用失败" in item for item in result.warnings)
+    assert any("模型调用失败（已重试" in item for item in result.warnings)
+    # 重试确实发生过（1 次成功 + 至少一轮"首次 + 重试"的失败）
+    assert model.calls >= 1 + web_agent.MODEL_CALL_RETRIES + 1
+    # 模型整体不可用时不该无限补缺：因 error 额外开的补缺轮有上限
+    assert result.rounds <= 1 + web_agent.MAX_ERROR_REPAIR_ROUNDS
+
+
+# --------------------------------------------------------------------------
+# 4.1 模型调用失败的两次机会（2026-09-15 真实事故后补）
+# --------------------------------------------------------------------------
+
+
+class FlakyModel:
+    """第一次调用正常写一个文件，随后所有调用都抛异常；**一旦收到补缺指令就恢复**。
+
+    用来复现真实事故的形状：一次生成要调 3~6 轮模型，其中某一轮网络抖动，
+    旧实现直接判死（"生成的文件不完整"），而模型其实还能继续干活。
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.repaired = False
+
+    def invoke(self, messages: list) -> AIMessage:
+        self.calls += 1
+        hint = "\n".join(str(getattr(item, "content", "")) for item in messages)
+        if "补缺指令" in hint:
+            # 补缺只写一次，之后如实"收工"——否则重复写同样的内容会触发无进展刹车
+            if not self.repaired:
+                self.repaired = True
+                return _usage(_write({"style.css": "B", "app.js": "C"}, f"c{self.calls}"))
+            return _usage(_done())
+        if self.calls == 1:
+            return _usage(_write({"index.html": "A"}, "c1"))
+        raise RuntimeError("模型服务超时")
+
+
+def test_transient_failure_is_retried_within_the_same_step() -> None:
+    """⚠️ 单轮抖动要**在轮内重试**：第二、三次调用正常返回，整次生成不该因此失败。"""
+
+    class OnceFlaky:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, messages: list) -> AIMessage:  # noqa: ARG002 —— 只看调用次数
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("连接被重置")
+            if self.calls == 1:
+                return _usage(_write({"index.html": "A"}, "c1"))
+            return _usage(_done())
+
+    model = OnceFlaky()
+
+    result = web_agent.generate(PLAN_1, REQUIREMENT, model=model, retry_backoff_seconds=0)
+
+    assert result.gate_passed is True, "抖动被重试吃掉，不该走到失败"
+    assert result.stop_reason == "done"
+    assert any("准备第 1 次重试" in item for item in result.warnings)
+
+
+def test_model_failure_does_not_skip_repair_round() -> None:
+    """⚠️ 核心用例：模型调用失败后**仍要进入补缺轮**（旧实现因 stop_reason=error 直接放弃）。
+
+    事故形状：第 1 步写了 1 个文件，第 2 步调用失败 → 门禁判缺件 →
+    旧实现直接失败（已尝试 1 轮），而那时模型完全可以继续把缺的文件补上。
+    """
+    model = FlakyModel()
+
+    result = web_agent.generate(PLAN_3, REQUIREMENT, model=model, retry_backoff_seconds=0)
+
+    assert result.gate_passed is True, "补缺轮跑完应当交付完整"
+    assert result.rounds == 2, "失败后仍应补缺一轮"
+    assert set(result.files) == {"index.html", "style.css", "app.js"}
+    assert any("开始补缺" in item for item in result.warnings)
+
+
+def test_repair_round_clears_previous_stop_reason() -> None:
+    """⚠️ 补缺轮必须把刹车原因清回 done：否则条件边在新一轮的第一个节点就 END，补缺等于没补。"""
+    model = FlakyModel()
+
+    result = web_agent.generate(PLAN_3, REQUIREMENT, model=model, retry_backoff_seconds=0)
+
+    assert result.stop_reason == "done", "补缺轮跑完不该还挂着上一轮的 error"
+    assert any("开始补缺" in item for item in result.warnings)
 
 
 # --------------------------------------------------------------------------

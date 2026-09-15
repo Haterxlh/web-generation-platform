@@ -1,6 +1,7 @@
 # app/utils/file_writer.py —— 产物落盘（含路径安全校验）
 # 职责边界：只负责"把 {文件名: 内容} 安全写进产物目录"，不做业务判断
 
+import json
 import re
 from pathlib import Path
 
@@ -90,6 +91,9 @@ DEBUG_RAW_NAME = "_debug_raw.txt"
 # Agent 循环的逐轮记录（阶段 6 起）：一行一轮，可直接 tail
 DEBUG_TRACE_NAME = "_debug_trace.jsonl"
 
+# 一次生成的结构化诊断信息（阶段 8 起）：失败原因、刹车原因、步数/轮数、警告、用量
+DEBUG_META_NAME = "_debug_meta.json"
+
 
 def write_debug_raw(user_id: int, task_uuid: str, text: str | None) -> str | None:
     """把模型原文写到任务目录下，供失败排查使用。
@@ -137,3 +141,33 @@ def write_debug_trace(user_id: int, task_uuid: str, jsonl: str | None) -> str | 
     directory.mkdir(parents=True, exist_ok=True)
     (directory / DEBUG_TRACE_NAME).write_text(jsonl, encoding="utf-8", newline="\n")
     return f"{user_id}/{task_uuid}/{DEBUG_TRACE_NAME}"
+
+
+def write_debug_meta(user_id: int, task_uuid: str, payload: dict | None) -> str | None:
+    """把一次生成的**结构化诊断信息**写成 ``_debug_meta.json``。
+
+    ⚠️ 为什么单独存一份（2026-09-15 的教训）：失败时我们只落了 trace，
+    而"第 2 步模型调用失败：TimeoutError: …"这类信息在 `WebAgentResult.warnings` 里 ——
+    它**既没落盘、也没进数据库**，用户看到的只是"生成的文件不完整（缺少 index.html、data.js）"。
+    于是"为什么缺"彻底丢失，只能靠重放整个流水线去猜（而重放还可能不复现）。
+    排查一次事故的成本，远高于把这个 dict 写进磁盘。
+
+    与 `write_debug_trace` 一样，它**不是产物**：不进 file_list、不写数据库。
+
+    Args:
+        user_id: 发起用户 id。
+        task_uuid: 任务唯一标识。
+        payload: 任意可 JSON 序列化的诊断字典；为空则什么都不写。
+
+    Returns:
+        写入的相对路径；未写入时返回 None。
+    """
+    if not payload:
+        return None
+
+    directory = task_dir(user_id, task_uuid)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / DEBUG_META_NAME).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n"
+    )
+    return f"{user_id}/{task_uuid}/{DEBUG_META_NAME}"

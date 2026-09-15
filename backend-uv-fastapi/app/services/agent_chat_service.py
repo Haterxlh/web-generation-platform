@@ -10,13 +10,12 @@ import logging
 import uuid
 
 from fastapi import HTTPException
-from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.chat import chat_agent
 from app.agents.router import intent_router
-from app.agents.state import RequirementDraft, RequirementSlots, digest_one_line
+from app.agents.state import RequirementDraft, RequirementSlots, digest_one_line, parse_draft
 from app.models.agent import AgentMessage, AgentSession, GenerationSource
 from app.repositories.agent import AgentMessageRepository, AgentSessionRepository
 from app.schemas.agent_schemas import (
@@ -207,14 +206,14 @@ class AgentChatService:
 
     @staticmethod
     def _load_draft(session: AgentSession) -> RequirementDraft:
-        """读会话上的需求草稿；数据不合法时退回空草稿而不是报错。"""
-        if not session.draft_requirement:
-            return RequirementDraft()
-        try:
-            return RequirementDraft.model_validate(session.draft_requirement)
-        except ValidationError as error:
-            logger.warning("会话 %s 的需求草稿无法解析，按空草稿处理：%s", session.session_uuid, error)
-            return RequirementDraft()
+        """读会话上的需求草稿；数据不合法时退回空草稿而不是报错。
+
+        解析口径由 ``state.parse_draft()`` 统一提供（生成路径也读同一份草稿，两处不能各写一套）。
+        """
+        draft, warning = parse_draft(session.draft_requirement)
+        if warning is not None:
+            logger.warning("会话 %s 的需求草稿无法解析，按空草稿处理：%s", session.session_uuid, warning)
+        return draft
 
     @staticmethod
     def _load_attachment_targets(
