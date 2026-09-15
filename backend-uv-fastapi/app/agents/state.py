@@ -440,6 +440,85 @@ class FinalRequirement(BaseModel):
         return "\n\n".join(parts)
 
 
+# 交付文件的角色：用枚举而不是自由文本 —— 门禁靠它比对"该交的都交了没"
+FILE_ROLES: tuple[str, ...] = ("markup", "style", "script", "data", "asset")
+
+
+class PlannedFile(BaseModel):
+    """计划交付的一个文件。
+
+    ⚠️ ``name`` 会先过 `file_writer.safe_name()` 白名单再入库/进门禁：
+    早先实测过模型把 ``style.css`` 写成 ``styles.css``，也见过它给出带路径的名字 ——
+    文件名不能由模型说了算（阶段 5 起改为"plan 定集合 + Python 校验"）。
+
+    ``role`` 用枚举（``markup`` / ``style`` / ``script`` / ``data`` / ``asset``）：
+    自由文本会让门禁与后续统计无法比对 —— "html" / "HTML" / "网页" 到底是同一类吗？
+    """
+
+    name: str = Field(description="文件名（单层、无路径成分，如 index.html）")
+    role: Literal["markup", "style", "script", "data", "asset"] = Field(
+        default="markup", description="文件角色"
+    )
+    depends_on: list[str] = Field(
+        default_factory=list, description="依赖的其他文件名（悬空依赖会被 Python 剔除）"
+    )
+    summary: str = Field(default="", description="这个文件负责什么（一句话，不给实现细节）")
+
+
+class FilePlan(BaseModel):
+    """规划产物：**事先声明的交付清单**（阶段 5 起由 plan-agent 产出）。
+
+    为什么需要它（而不是让 web-agent 自己决定交什么）：
+    完成门禁需要一份**事先声明**的清单才能判定"交付完整"。若没有它，
+    完成判定就只能退回"模型说完了就算完"—— 那正是本次改造要根治的毛病
+    （实测出现过"只写 1 个文件就宣布完成"）。
+
+    ``difficulty`` 不是标签而是**开关**：它决定 web-agent 的步数上限与 token 预算
+    （见 `app/agents/common.py` 的 `StageBudget`），因此 Python 会复核它（只能上调，不能低报）。
+    """
+
+    difficulty: Literal["easy", "medium", "hard"] = Field(
+        default="medium", description="难度（决定步数上限与 token 预算）"
+    )
+    entry_file: str = Field(default="index.html", description="入口文件（预览打开的就是它）")
+    files: list[PlannedFile] = Field(default_factory=list, description="要交付的文件清单")
+    tech_constraints: list[str] = Field(
+        default_factory=list, description="技术约束（如「不引入构建工具」「只用原生 JS」）"
+    )
+    assets: list[str] = Field(
+        default_factory=list, description="外部资源（CDN 库、字体、图片占位等）"
+    )
+
+    def names(self) -> list[str]:
+        """清单里的文件名（顺序即计划顺序，门禁按它比对）。"""
+        return [item.name for item in self.files]
+
+    def as_prompt_text(self) -> str:
+        """渲染成"给模型看"的文件清单（阶段 6 的 web-agent 按它逐个交付）。"""
+
+        def _lines(items: list[str]) -> str:
+            return "\n".join(f"- {item}" for item in items) if items else "（无）"
+
+        files = (
+            "\n".join(
+                f"- {item.name}（{item.role}）：{item.summary or '（未说明）'}"
+                + (f"｜依赖：{'、'.join(item.depends_on)}" if item.depends_on else "")
+                for item in self.files
+            )
+            or "（无）"
+        )
+        parts = [
+            f"【难度】{self.difficulty}",
+            f"【入口文件】{self.entry_file}",
+            "【交付清单（缺一不可）】\n" + files,
+        ]
+        if self.tech_constraints:
+            parts.append("【技术约束】\n" + _lines(self.tech_constraints))
+        if self.assets:
+            parts.append("【外部资源】\n" + _lines(self.assets))
+        return "\n\n".join(parts)
+
+
 class RequirementDigest(BaseModel):
     """一份文档的"理解结果"（digest-agent 的结构化输出，阶段 3 起使用）。
 

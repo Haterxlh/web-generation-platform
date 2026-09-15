@@ -132,6 +132,130 @@ def ensure_not_truncated(message: AIMessage) -> None:
         )
 
 
+# ==================== 难度 → 预算（阶段 5） ====================
+
+
+# 难度档位的顺序：**只允许往上调**，不允许降级（见 resolve_difficulty）
+DIFFICULTY_ORDER: tuple[str, ...] = ("easy", "medium", "hard")
+
+# 未知难度的兜底档位：宁可多给一点预算，也不要因为一个拼错的字符串把任务卡死
+DEFAULT_DIFFICULTY = "medium"
+
+
+@dataclass(frozen=True)
+class StageBudget:
+    """一个难度档位的**执行预算**（阶段 5 起由 plan-agent 的 difficulty 决定）。
+
+    为什么 difficulty 必须映射到这几个数字：否则它只是个装饰品 ——
+    模型说"这个需求很难"，而 Harness 仍然只给 6 步、12k token，结果是循环跑到一半被掐断，
+    用户看到的却是"生成失败"。**难度必须真的改变 Harness 的行为**，这条才算落地。
+
+    Attributes:
+        difficulty: 档位名（easy / medium / hard）。
+        max_steps: web-agent 循环的**工具调用步数上限**（防死循环，硬约束 10）。
+        max_output_tokens: 该任务允许的输出 token 预算（含重试），用于刹车与告警。
+        max_files: 该档位允许交付的文件数上限（用于难度复核，见 resolve_difficulty）。
+    """
+
+    difficulty: str
+    max_steps: int
+    max_output_tokens: int
+    max_files: int
+
+
+# ⚠️ 这份表是**唯一的数值真源**：档位阈值（几个文件算 medium）与预算都由它派生，
+# 不另写一套 if/else —— 两处规则一旦漂移，就会出现"难度判成 hard 但预算按 easy 给"。
+BUDGET_BY_DIFFICULTY: dict[str, StageBudget] = {
+    # 单文件（原 single_html_flow 的成功经验：一次调用、产物完整）
+    "easy": StageBudget(difficulty="easy", max_steps=6, max_output_tokens=12_000, max_files=1),
+    # 经典三件套 html + css + js：够写、也够一次补缺
+    "medium": StageBudget(difficulty="medium", max_steps=12, max_output_tokens=40_000, max_files=4),
+    # 多页面 / 带数据 / 需要多轮定向补缺
+    "hard": StageBudget(difficulty="hard", max_steps=20, max_output_tokens=80_000, max_files=8),
+}
+
+
+def budget_for(difficulty: str | None) -> StageBudget:
+    """取某个难度的预算。
+
+    Args:
+        difficulty: 难度名；None 或无法识别时返回默认档位。
+
+    Returns:
+        对应的 `StageBudget`（未知难度返回 medium）。
+    """
+    return BUDGET_BY_DIFFICULTY.get(
+        (difficulty or "").strip().lower(), BUDGET_BY_DIFFICULTY[DEFAULT_DIFFICULTY]
+    )
+
+
+def difficulty_rank(difficulty: str | None) -> int:
+    """难度的序号（用于比较"谁更高"）。
+
+    Args:
+        difficulty: 难度名。
+
+    Returns:
+        序号；无法识别时返回默认档位的序号。
+    """
+    key = (difficulty or "").strip().lower()
+    if key not in DIFFICULTY_ORDER:
+        key = DEFAULT_DIFFICULTY
+    return DIFFICULTY_ORDER.index(key)
+
+
+def difficulty_for_file_count(file_count: int) -> str:
+    """按文件数推出**难度下限**（从预算表派生，不另写一套阈值）。
+
+    Args:
+        file_count: 计划交付的文件数。
+
+    Returns:
+        难度下限；文件数为 0 时按 easy 处理（真正的兜底在 plan-agent 里）。
+    """
+    for name in DIFFICULTY_ORDER:
+        if file_count <= BUDGET_BY_DIFFICULTY[name].max_files:
+            return name
+    return DIFFICULTY_ORDER[-1]
+
+
+def resolve_difficulty(declared: str | None, file_count: int) -> tuple[str, str | None]:
+    """复核难度：**只能上调，不能下调**。
+
+    两种偏差的方向是不对称的：
+
+    - 模型把 ``hard`` 判成 ``easy`` → 预算不够，循环半路被掐断，用户拿到失败（**必须防**）；
+    - 模型把 ``easy`` 判成 ``hard`` → 只是多给预算，最坏是多花一点钱（可接受）。
+
+    所以这里取"模型判定"与"文件数推算"的**较高者**：
+    既不裁剪模型声明的文件（那等于静默丢掉交付物），也不让它低报难度。
+    模型没给或给了个无效值时，直接按文件数推算（并说明原因，便于优化提示词）。
+
+    Args:
+        declared: 模型声明的难度。
+        file_count: 清洗后的实际文件数。
+
+    Returns:
+        (最终难度, 调整原因或 None)。原因会写进 plan 的警告与
+        ``generation_plan.difficulty_declared`` 的对照里，便于后续优化提示词。
+    """
+    floor = difficulty_for_file_count(file_count)
+    key = (declared or "").strip().lower()
+
+    if key not in DIFFICULTY_ORDER:
+        label = "未给出难度" if not key else f"给出的难度 {declared!r} 无效"
+        return floor, f"模型{label}，已按 {file_count} 个文件推算为 {floor}"
+
+    if difficulty_rank(key) >= difficulty_rank(floor):
+        return key, None
+
+    return (
+        floor,
+        f"模型声明难度为 {key}，但计划交付 {file_count} 个文件（该难度上限 "
+        f"{budget_for(key).max_files} 个），已按 {floor} 上调预算",
+    )
+
+
 # ==================== Agent 循环的可观测（Harness 六件套之⑤） ====================
 
 

@@ -144,3 +144,75 @@ curl http://127.0.0.1:8000/api/agent/session/<uuid> -H "Authorization: Bearer <t
 ```
 
 > 也可以直接打开 http://127.0.0.1:8000/docs 里的「Agent 对话」分组试用。
+
+### 7. 文档解析与附件上传（阶段 3 起）
+
+7.1 解析层与上传全链路自检
+
+```shell
+cd ./backend-uv-fastapi
+uv run python -m app.utils.utils_check.check_source_upload
+```
+
+> 第一段（离线）验证解析层：GBK 的 `.txt` 正确解码、坏编码明确报错、`.md` 骨架、
+> HTML 设计令牌、扫描版 PDF 报错、落盘字节保真；
+> 第二段（⚠️ 真实模型）走真实 HTTP 验证：`.md` / 设计规范 `.html` / 真实 PDF / GBK `.txt` 各一份，
+> 以及"扫描版 PDF 返回 `parse_status=failed` 而不是 5xx"（需要 `uv run fastapi dev` 在跑，否则自动跳过）。
+
+7.2 手工试用上传接口
+
+```shell
+# 先建会话（或复用已有 session_uuid）：
+curl -X POST http://127.0.0.1:8000/api/agent/chat \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"message":"按我上传的规范做"}'
+
+# 上传附件（multipart；支持 .pdf/.html/.htm/.md/.txt，上限 10MB）：
+curl -X POST http://127.0.0.1:8000/api/agent/source/upload \
+  -H "Authorization: Bearer <token>" \
+  -F "session_uuid=<uuid>" -F "file=@./需求说明.md"
+
+# 查看会话下的附件（渲染 @docN chip 用）：
+curl "http://127.0.0.1:8000/api/agent/source/list?session_uuid=<uuid>" \
+  -H "Authorization: Bearer <token>"
+```
+
+### 8. 个人 RAG 占位（阶段 4 起）
+
+```shell
+cd ./backend-uv-fastapi
+uv run python -m app.utils.utils_check.check_rag
+```
+
+> 第一段（离线）验证三态语义与安全边界：`skipped` 时**不调用** provider、
+> 桩 `miss` 自报"检索尚未接入"、`hit` 保留 L1/L2 来源、`user_id` 必填且拒绝非法值、
+> merge 的 `miss→uncertainty` 与 `skipped→静默`；
+> 第二段（⚠️ 真实模型，约 1k in/次）验证"通用需求判不需要检索、指代私人资料判需要并给出关键词"。
+> 一期**不实现检索**，二期只替换 `build_retriever_provider()`。
+
+### 9. 交付规划与难度预算（阶段 5 起）
+
+9.1 规划质量与「预估 vs 实际」对账自检
+
+```shell
+cd ./backend-uv-fastapi
+uv run python -m app.utils.utils_check.check_plan
+```
+
+> 第一段（离线）验证清单清洗与预算：非法文件名丢弃、悬空依赖剔除、难度只上调、
+> 全非法时兜底单文件、预算随难度递增；
+> 第二段（⚠️ 真实模型，各跑 3 次）验证同一需求的文件清单是否稳定、难度是否与文件数匹配；
+> 第三段（真实 PG）把规划写进 `generation_plan`、回填"实际值"并打出对账表（结束后自动清理）。
+
+9.2 迁移与对账查询
+
+```shell
+cd ./backend-uv-fastapi
+uv run alembic upgrade head          # 阶段 5 新增 generation_plan 表（revision b7c1d2e3f4a5）
+uv run alembic current
+```
+
+> 难度档位与预算的唯一真源：`app/agents/common.py` 的 `BUDGET_BY_DIFFICULTY`
+> （easy 6 步/12k/1 文件、medium 12 步/40k/4、hard 20 步/80k/8）。
+> ⚠️ 实际值（实际步数/文件数/结果）由**阶段 6 的生成循环结束时**调用
+> `GenerationPlanRepository.mark_outcome()` 回填；在那之前该表只有预估侧有值。

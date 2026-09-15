@@ -147,8 +147,8 @@
     2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
-### 模块：Agent 框架（阶段 0~4）
-- **状态**：进行中（阶段 0、1、2、3、4 已完成；阶段 5~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
+### 模块：Agent 框架（阶段 0~5）
+- **状态**：进行中（阶段 0、1、2、3、4、5 已完成；阶段 6~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
 - **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
   并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示
 - **已交付内容**：
@@ -337,6 +337,45 @@
        二期若要"宁可多查一次"只需改这个参数；
     3. 顺带修掉 `test_requirement_merge.py` 中两处把**系统提示词**也拼进断言的写法 ——
        提示词为解释规则同样会提到"来源 4"，会让"位置顺序"断言失去意义（改为只检查用户消息）
+- **阶段 5 交付（2026-09-15）**：
+  - **`StageBudget`（阶段 1 刻意推迟的那一块）**：`app/agents/common.py` 新增
+    `StageBudget`（`max_steps` / `max_output_tokens` / `max_files`）、`BUDGET_BY_DIFFICULTY`
+    （easy 6 步/12k/1 文件、medium 12 步/40k/4、hard 20 步/80k/8）、`budget_for()`、
+    `difficulty_for_file_count()`、`resolve_difficulty()`；
+    **难度只能上调、不能低报**（低报会让循环被预算掐断，高报只是多花钱），
+    且档位阈值与预算**同表派生**，不会出现"判成 hard 却按 easy 给预算"
+  - **契约**：`app/agents/state.py` 新增 `PlannedFile`（`name` / `role` 枚举
+    `markup|style|script|data|asset` / `depends_on` / `summary`）与 `FilePlan`
+    （`difficulty` / `entry_file` / `files` / `tech_constraints` / `assets` + `names()` / `as_prompt_text()`）
+  - **plan-agent**：`app/agents/plan/plan_agent.py` + `app/prompts/plan_agent_system.md` ——
+    输入 `FinalRequirement` → 结构化 `FilePlan`（一次调用）；
+    **Python 四道关**：① 文件名逐个过 `safe_name()` 白名单，非法名丢弃并记警告；
+    ② 同名合并、`depends_on` 悬空依赖剔除（保留文件本身）；③ 入口不在清单里则改用第一个
+    markup 文件；④ 全部非法或调用失败 → **启发式兜底计划**（单文件 `index.html`，难度 easy）并标降级
+  - **`generation_plan` 表**（PG，Alembic `b7c1d2e3f4a5`）：存推理产物（`final_requirement` /
+    `file_plan` JSONB）与**「预估 vs 实际」对照字段**；`app/models/agent/generation_plan.py`、
+    `app/repositories/agent/plan_repository.py`（`create` / `get_by_uuid` / `get_latest_by_task_uuid` /
+    `list_recent` / **`mark_outcome()`** 回填实际值）
+  - **按你追加的要求，每个任务同时记录两组数据**（用于后续优化提示词）：
+    - 预估侧：`difficulty_declared`（**模型原始声明**）/ `difficulty`（Python 复核后）/
+      `planned_file_count` / `budget_steps` / `budget_output_tokens` / `validation_warnings`
+    - 实际侧：`actual_steps`（web-agent 真正的工具调用步数）/ `actual_file_count` /
+      `outcome_status` / `finished_at` —— 由**阶段 6 的生成循环结束时**调用 `mark_outcome()` 回填
+    - 两侧同一行：`list_recent()` 一次查询就能出对账表，不必跨库拼两次查询
+  - **偏差 / 计划外增补**：
+    1. `FilePlan` 增加 `entry_file`（计划里没写）：预览必须知道打开哪个文件，
+       且它必须在清单里 —— 否则"多页面"计划的预览会打不开任何东西；
+    2. `resolve_difficulty()` 对"模型没给/给了无效难度"的处理是**按文件数推算并留痕**，
+       而不是套用默认档位 —— 否则一个拼错的字符串会静默把预算压到 medium；
+    3. `mark_outcome()` 显式刷新 `update_time`：本表没有 ON UPDATE，
+       `server_onupdate` 不会出现在 UPDATE 语句里（与 `generation_task` 同一教训）；
+    4. 自检脚本对 PG 的写入采用**物理删除**收尾（与业务无关，不必留逻辑删除标记）
+  - **验证情况**：`pytest` **387 个用例全绿**（335 → 新增 52，全程离线）；
+    `check_plan` 三段全通过 —— ① 离线六项（非法名丢弃 / 难度上调 / 全非法兜底 / 悬空依赖 /
+    预算递增 / 兜底契约）；② **真实模型规划质量**：简单需求（待办清单）**3 次文件清单完全一致**
+    （`index.html`+`style.css`+`script.js`，medium），复杂需求（企业官网四页 + 数据文件）3 次均为
+    hard、7 个文件（仅数据文件名在 `products.json`/`data.json` 间波动）；③ **PG 往返与对账**：
+    写入 → 读回 JSONB 保真 → 回填实际值 → `update_time` 刷新 → 打出对账表，结束后清理无残留
 - **待办与遗留**：
   - ✅ **`npm run lint` / `tsc -b` / `npm run build` 已于 2026-09-15 全部通过**；此前 2 个 `react-hooks/set-state-in-effect` 报错（位于
     `hooks/AuthProvider.tsx` 与 `pages/Projects/ProjectsPage.tsx`）已修复，详见上方"本轮修复（2026-09-15）"
@@ -365,6 +404,18 @@
       二期的 `knowledge_chunk.source_type` 必须与 `RagChunk.source_type` 对齐，否则检索结果无法按层级调权
     - 一期**无法端到端验证检索质量**（`hit` 只能用假 provider 跑通）—— 刻意接受的范围限制
     - merge 已支持 `rag` 三态，但**尚未入图**（阶段 6 orchestrator 才把 `need_rag → retrieve → merge` 串起来）
+  - **阶段 5 遗留**：
+    - **plan-agent 尚未入图**（按计划到阶段 6：`merge → plan → web-agent ReAct 环 → gate`）；
+      `StageBudget` 也还没有真实消费者 —— 阶段 6 的 web-agent 必须真的按 `max_steps` /
+      `max_output_tokens` 刹车，否则难度依旧只是标签
+    - `generation_plan` 的**写入与回填都在阶段 6**：本阶段的 repository 只被自检脚本使用，
+      这是刻意的（与阶段 1 推迟 `StageBudget` 同一考量：不留无人使用的代码）
+    - **难度判定的长期准确性待观察**：当前只跑了两类需求各 3 次；
+      "模型是否长期偏保守地判 medium"要靠阶段 6/7 的真实数据（对账表就是为这个准备的）
+    - 复杂需求的**数据文件名会在 `products.json` / `data.json` 之间波动**：
+      不影响交付完整性（门禁只认"清单里的文件是否都写了"），但若将来要做产物对比，需要先归一
+    - 兜底计划固定为单文件 `index.html`：对"多页面需求但规划失败"的场景只能给出一个页面，
+      属于已知取舍（生成链路不阻塞优先于兜底质量）
 
 ## 2. 项目级约定（跨模块通用）
 - 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
@@ -381,6 +432,13 @@
   消息里只存别名，**绝不存文件正文或磁盘路径**；别名进 prompt 前必须过白名单校验
 - **上传附件与生成产物分开存放**（`uploads/` ↔ `generated/`），两者都已 gitignore；
   上传文件的**展示名（原名）与磁盘名（`source{后缀}`）分离**，磁盘名永远由后端决定
+- **推理产物落 PG**（`generation_plan`）：`FinalRequirement` / `FilePlan` 不塞进 MySQL 的
+  `generation_task`；跨库只靠 `task_uuid` 在 service 层组装，**不 JOIN**
+- **难度→预算的唯一真源**在 `app/agents/common.py` 的 `BUDGET_BY_DIFFICULTY`
+  （步数 / 输出 token / 文件数上限），且 `resolve_difficulty()` **只允许上调难度**
+- **每次生成都要留下「预估 vs 实际」**（同一行）：预估 = 模型声明难度 / 复核后难度 /
+  计划文件数 / 预算步数与 token；实际 = 实际步数 / 实际文件数 / 结果 / 完成时间 ——
+  这是后续优化提示词与新档位调参的证据来源（`check_plan.py` 的对账表即读它）
 
 ## 3. 下一步计划（按优先级）
 - [x] **Agent 框架阶段 2**（已完成 2026-09-15，见上方模块进度）
@@ -389,10 +447,16 @@
 - [x] **Agent 框架阶段 4**（已完成 2026-09-15）：个人 RAG 占位 —— `agents/rag/need_rag.py`（真实现）、
       `agents/rag/retriever.py`（接口 + 桩 provider）、`merge` 的 `rag` 三态入口；
       **二期只替换 provider**（见上方模块进度）
-- [ ] **Agent 框架阶段 5**：plan-agent —— `agents/plan/plan_agent.py` + `plan_agent_system.md`、
-      `FilePlan` 契约（`difficulty` / `files[]` / `tech_constraints` / `assets`）、
-      Alembic 建 `generation_plan` 表（存 `FinalRequirement` 与 `FilePlan`）；
-      **难度必须真的映射 web-agent 的步数上限与预算**，文件名要过 `safe_name` 白名单校验（归属：Agent 框架）
+- [x] **Agent 框架阶段 5**（已完成 2026-09-15）：plan-agent —— `StageBudget`（难度→步数/token/文件数）、
+      `FilePlan` 契约、`agents/plan/plan_agent.py`、`generation_plan` 表（含**预估 vs 实际**对照字段）
+      与迁移 `b7c1d2e3f4a5`（见上方模块进度）
+- [ ] **Agent 框架阶段 6（★主流程打通）**：`agents/web/web_agent.py`（model ⇄ ToolNode 的 ReAct 环）、
+      `agents/orchestrator.py`（外层需求装配图：router → digest → need_rag → merge → plan → web-agent → gate）、
+      `app/prompts/web_agent_system.md`（**去掉交付清单**，只留角色 + 工具语义）、统一入口接口；
+      要点：**完成判定权在 Python 侧**（`store.missing(plan 清单)`）、工具永不抛异常、
+      步数/预算按 `StageBudget` 刹车、循环中途不向用户提问、
+      **结束时回填 `generation_plan` 的实际值**（步数 / 文件数 / 结果）
+      （归属：Agent 框架）
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
@@ -450,6 +514,15 @@
   `merge` 的入口从 `rag_context: str` 升级为 `rag: RagResult | None`
   （`hit`→证据+片段、`miss`→uncertainty、`skipped`→静默）；
   新增 `check_rag.py` 与 42 个离线用例（共 335 个）
+- **2026-09-15（Agent 框架阶段 5）**：落地**交付规划与难度预算** ——
+  `agents/common.py`（+`StageBudget` / `BUDGET_BY_DIFFICULTY` / `budget_for` /
+  `difficulty_for_file_count` / `resolve_difficulty`，难度只上调）、
+  `agents/state.py`（+`PlannedFile` / `FilePlan`，含 `entry_file` 与 `as_prompt_text()`）、
+  `agents/plan/plan_agent.py` + `app/prompts/plan_agent_system.md`
+  （文件名单白名单校验、悬空依赖剔除、入口回退、启发式兜底计划）、
+  `models/agent/generation_plan.py` + Alembic `b7c1d2e3f4a5` + `repositories/agent/plan_repository.py`
+  （含 `mark_outcome()` 回填实际值与 `list_recent()` 对账查询）、
+  新增 `check_plan.py` 与 52 个离线用例（共 387 个）
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）

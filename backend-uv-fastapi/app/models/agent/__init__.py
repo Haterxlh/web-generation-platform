@@ -15,6 +15,7 @@ Alembic 的 `env.py` 通过 import 本包来收集 `PgBase.metadata`；
 
 from app.models.agent.agent_message import AgentMessage
 from app.models.agent.agent_session import AgentSession
+from app.models.agent.generation_plan import GenerationPlan
 from app.models.agent.generation_source import GenerationSource
 
-__all__ = ["AgentMessage", "AgentSession", "GenerationSource"]
+__all__ = ["AgentMessage", "AgentSession", "GenerationPlan", "GenerationSource"]

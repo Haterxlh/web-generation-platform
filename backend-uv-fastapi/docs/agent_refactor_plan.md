@@ -243,7 +243,8 @@ backend-uv-fastapi/
 │  │  └─ agent/                 # ★新：只 import PgBase（见 §5 硬约束 1）
 │  │     ├─ agent_session.py
 │  │     ├─ agent_message.py
-│  │     └─ generation_source.py
+│  │     ├─ generation_source.py
+│  │     └─ generation_plan.py   # ★新（阶段 5）：FinalRequirement / FilePlan + 预估与实际对照
 │  ├─ prompts/
 │  │  ├─ intent_router_system.md    # ★新
 │  │  ├─ chat_agent_system.md       # ★新
@@ -252,7 +253,7 @@ backend-uv-fastapi/
 │  │  ├─ requirement_merge_system.md# ★新（四来源冲突消解）
 │  │  ├─ plan_agent_system.md       # ★新
 │  │  └─ web_agent_system.md        # ★新（**不含**交付清单）
-│  ├─ repositories/agent/           # ★新：PG 侧 session / message / source
+│  ├─ repositories/agent/           # ★新：PG 侧 session / message / source / plan
 │  ├─ utils/
 │  │  ├─ agent/alias.py         # ★新：别名分配/解析/展开/校验（纯函数）
 │  │  ├─ agent/source_store.py  # ★新：附件落盘（展示名与磁盘名分离）
@@ -528,7 +529,8 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
 | 附件与别名 | PG `generation_source` + `uploads/` | 上传时 | digest / 别名展开 |
 | `RequirementDigest` | PG `generation_source.digest` | 解析后（**可缓存，跨轮复用**） | MERGE |
 | 任务生命周期 | MySQL `generation_task` | 入队 + 每阶段 | 前端轮询 |
-| `FinalRequirement` / `FilePlan` | PG `generation_plan`（**阶段 5 用 Alembic 加**） | MERGE / PLANNING 后 | web-agent / GATE |
+| `FinalRequirement` / `FilePlan` | PG `generation_plan`（阶段 5 已建，迁移 `b7c1d2e3f4a5`） | MERGE / PLANNING 后 | web-agent / GATE |
+| 预估 vs 实际（难度/步数/文件数） | PG `generation_plan` 同一行（预估在 PLANNING 写入，实际在生成结束时回填） | 规划时 + 生成结束时 | 优化提示词 / 调参 |
 | 产物文件 | `generated/{uid}/{task_uuid}/` | 循环结束后**一次性**落盘 | 预览 |
 | `AgentTrace` | `_debug_trace.jsonl` | 失败时（可选总是） | 排查 |
 | token 用量 | MySQL `generation_task` 三列 | 结束时（**失败也记**） | 前端 / 统计 |
@@ -825,7 +827,7 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   - **已知代价**：一期无法端到端验证检索质量（`hit` 只能用假 provider 跑通）；
     `need_rag` 每次生成多一次模型调用（约 1k in），只在生成路径跑，对话路径不跑
 
-### 阶段 5｜plan-agent
+### 阶段 5｜plan-agent —— ✅ 已完成（2026-09-15）
 - **产出**：`agents/plan/plan_agent.py`、`app/prompts/plan_agent_system.md`、`FilePlan` 模型
 - **要点**：
   - 产出结构化 `FilePlan`：`difficulty`(easy/medium/hard)、`files[]{name, role, depends_on, summary}`、
@@ -837,6 +839,45 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
     但必须过 `file_writer._safe_name` 白名单校验；web-agent 的完成门禁**以 plan 声明的清单为准**
     （不再硬编码三件套）。原"单文件模式"降为 `difficulty=easy` 的特例。
 - **验收**：同一需求跑 3 次文件清单稳定；`easy` 需求不应产出 6 个文件（难度判定有效性）
+- **实际交付与偏差（2026-09-15）**：
+  - 交付：`app/agents/common.py`（+`StageBudget` / `BUDGET_BY_DIFFICULTY` / `budget_for` /
+    `difficulty_for_file_count` / `resolve_difficulty`）、`app/agents/state.py`（+`PlannedFile` / `FilePlan`）、
+    `app/agents/plan/plan_agent.py`、`app/prompts/plan_agent_system.md`、
+    `app/models/agent/generation_plan.py`、Alembic 迁移 `b7c1d2e3f4a5`、
+    `app/repositories/agent/plan_repository.py`、`app/utils/utils_check/check_plan.py`、
+    `tests/test_stage_budget.py`、`tests/test_plan_agent.py`（+52 用例，共 387 个）
+  - **预算档位（与人确认，唯一真源在 `BUDGET_BY_DIFFICULTY`）**：
+
+    | difficulty | 文件数上限 | 步数上限 | 输出 token 预算 |
+    |---|---|---|---|
+    | easy | 1 | 6 | 12k |
+    | medium | 4 | 12 | 40k |
+    | hard | 8 | 20 | 80k |
+
+  - **偏差 1：`FilePlan` 增加 `entry_file`**（原计划只有 files / difficulty / tech_constraints / assets）——
+    预览必须知道打开哪个文件；且它必须在清单里，否则多页面计划会"预览打不开任何东西"。
+    入口不在清单时由 Python 改用第一个 markup 文件（再不行用兜底名）。
+  - **偏差 2：`resolve_difficulty()` 对"模型没给 / 给了无效难度"按文件数推算并留痕**，
+    而不是套用默认档位 —— 否则模型把 `hard` 拼错成 `harder`，预算会被静默压到 medium。
+  - **偏差 3：`mark_outcome()` 显式刷新 `update_time`** —— `generation_plan` 没有 ON UPDATE，
+    `server_onupdate` 不会出现在 UPDATE 语句里（`generation_task` 上已踩过同一坑）。
+  - **增补（2026-09-15 用户要求）：每次生成必须留下「预估 vs 实际」，用于后续优化提示词。**
+
+    | 侧 | 字段 | 来源 |
+    |---|---|---|
+    | 预估 | `difficulty_declared` / `difficulty` / `planned_file_count` / `budget_steps` / `budget_output_tokens` / `validation_warnings` | plan-agent（阶段 5 写入） |
+    | 实际 | `actual_steps` / `actual_file_count` / `outcome_status` / `finished_at` | web-agent 循环（阶段 6 用 `mark_outcome()` 回填） |
+
+    ⚠️ 两侧刻意放在**同一行**：否则"最近 20 次规划准不准"要跨库拼两次查询，
+    日常不会有人去查，这张表就白建了。`GenerationPlanRepository.list_recent()` 即对账入口。
+  - **实测结论**：离线六项全通过（非法名丢弃 / 难度上调 / 全非法兜底 / 悬空依赖剔除 /
+    预算递增 / 兜底契约）；**真实模型**：简单需求（待办清单）**3 次清单完全一致**
+    （`index.html`+`style.css`+`script.js`，medium）；复杂需求（企业官网四页 + 数据文件）
+    3 次均 hard、7 个文件（仅数据文件名在 `products.json`/`data.json` 间波动）；
+    **PG 往返**：写入 → 读回 JSONB 保真 → 回填实际值 → `update_time` 刷新 → 打出对账表 → 清理无残留
+  - **已知代价**：`StageBudget` 与 `plan-agent` 都还没有真实消费者（阶段 6 才入图）；
+    兜底计划固定单文件 `index.html`（对"多页面但规划失败"只能给一个页面）；
+    难度是否长期偏保守需要阶段 6/7 的真实数据（对账表就是为此准备的）
 
 ### 阶段 6｜web-agent + 外层编排图 ★主流程打通
 - **产出**：`agents/web/web_agent.py`、`agents/orchestrator.py`、
@@ -946,6 +987,9 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
 | 2026-09-15 | 阶段 4：三态语义与安全边界（离线） | 假 provider / 桩 provider / 非法 user_id / merge | `skipped` 时 provider 调用次数 **0**；桩 `miss` 自报"尚未接入"；`hit` 保留 L1/L2；`user_id=0` 被拒绝；merge `miss→uncertainty`、`skipped→无提示` | **通过** —— "不适用"与"失败"在代码层面被彻底分开 |
 | 2026-09-15 | 阶段 4：检索必要性判定（真实模型） | 通用需求（番茄钟）/ 指代私人资料（"按我们公司的品牌色和 VI 规范"） | 前者 `need=False`（理由：通用功能页面，需求已完整写在输入中）；后者 `need=True`、`query='公司 品牌色 VI规范 产品名'` | **通过** —— 检索词是关键词而非问句；单次约 1k in / 100 out |
 | ✅ | 阶段 4：个人 RAG 占位 —— **已完成（2026-09-15）** | — | — | — |
+| 2026-09-15 | 阶段 5：文件清单稳定性与难度判定（真实模型，各 3 次） | 待办清单（简单）/ 企业官网四页 + 数据文件（复杂） | 简单：3 次均 `medium` 且清单完全一致（`index.html`+`style.css`+`script.js`）；复杂：3 次均 `hard`、7 个文件，仅数据文件名在 `products.json`/`data.json` 间波动 | **通过** —— 清单稳定是门禁可用的前提；难度与文件数匹配（未出现 easy 交 6 个文件） |
+| 2026-09-15 | 阶段 5：`generation_plan` 往返与对账（真实 PG） | 规划写入 → 读回 → 回填实际值 → 对账查询 | JSONB 保真；`mark_outcome()` 写入实际步数/文件数/结果/完成时间并刷新 `update_time`；`list_recent()` 打出"模型难度 vs 最终难度 vs 计划文件 vs 预算步数 vs 实际步数"对照表；脚本结束清理无残留 | **通过** —— 预估与实际同行的结构可用，这是后续优化提示词的证据来源 |
+| ✅ | 阶段 5：plan-agent + `StageBudget` + `generation_plan` —— **已完成（2026-09-15）** | — | — | — |
 | ✅ | 阶段 0：异步骨架 —— **已完成（2026-09-15）**，见上方两条实测记录 | — | — | — |
 | | 阶段 6：模型自主性三层验证 | | | |
 | | 阶段 7：新旧实现对照 | | | |

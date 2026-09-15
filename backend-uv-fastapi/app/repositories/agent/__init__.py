@@ -8,7 +8,13 @@
 """
 
 from app.repositories.agent.message_repository import AgentMessageRepository
+from app.repositories.agent.plan_repository import GenerationPlanRepository
 from app.repositories.agent.session_repository import AgentSessionRepository
 from app.repositories.agent.source_repository import GenerationSourceRepository
 
-__all__ = ["AgentMessageRepository", "AgentSessionRepository", "GenerationSourceRepository"]
+__all__ = [
+    "AgentMessageRepository",
+    "AgentSessionRepository",
+    "GenerationPlanRepository",
+    "GenerationSourceRepository",
+]
