@@ -219,8 +219,9 @@ backend-uv-fastapi/
 │  │  ├─ state.py               # ★新：AgentState / ClarifiedRequirement / RequirementDigest / FilePlan
 │  │  ├─ stages.py              # ★新：AgentStage 枚举 + 中文文案 + 进度映射
 │  │  ├─ orchestrator.py        # ★新：外层需求装配图
-│  │  ├─ router/intent_router.py    # 意图识别（规则优先 + LLM 结构化兜底）
-│  │  ├─ chat/chat_agent.py         # 澄清对话 → ClarifiedRequirement
+│  │  ├─ router/intent_router.py    # 意图识别（全 AI 结构化判定 + Python 兜底）
+│  │  ├─ chat/chat_agent.py         # 澄清对话（只说话，不抽槽位）
+│  │  ├─ source/role_policy.py      # ★新：角色裁决（只有 HTML 能当风格源；纯函数）
 │  │  ├─ source/doc_digest_agent.py # **仅文件** → RequirementDigest（map-reduce，结果可缓存）
 │  │  ├─ merge/requirement_merge.py # 对话摘要 + 四来源冲突消解 → FinalRequirement
 │  │  ├─ rag/need_rag.py            # 是否需要检索（一期即做，真实输出）
@@ -246,11 +247,16 @@ backend-uv-fastapi/
 │  ├─ prompts/
 │  │  ├─ intent_router_system.md    # ★新
 │  │  ├─ chat_agent_system.md       # ★新
+│  │  ├─ doc_digest_system.md       # ★新（整篇理解）
+│  │  ├─ doc_chunk_digest_system.md # ★新（分块理解，map 阶段）
+│  │  ├─ requirement_merge_system.md# ★新（四来源冲突消解）
 │  │  ├─ plan_agent_system.md       # ★新
 │  │  └─ web_agent_system.md        # ★新（**不含**交付清单）
+│  ├─ repositories/agent/           # ★新：PG 侧 session / message / source
 │  ├─ utils/
 │  │  ├─ agent/alias.py         # ★新：别名分配/解析/展开/校验（纯函数）
-│  │  ├─ doc/                   # ★新：pdf_parser.py / html_parser.py（无 LLM）
+│  │  ├─ agent/source_store.py  # ★新：附件落盘（展示名与磁盘名分离）
+│  │  ├─ doc/                   # ★新：base / text_parser / html_parser / pdf_parser（无 LLM）
 │  │  └─ weg_gen/file_store.py  # ★新：虚拟文件系统（per-request）
 │  └─ alembic/                  # ★新：PG 侧迁移（extension + 索引）
 ├─ sql/scripts/                 # DDL 脚本（沿用根 sql/ 约定）
@@ -709,10 +715,11 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   - **修掉一个真 bug**：`_SAFE_ALIAS_RE` 漏了捕获组，而 `parse_alias_index()` 用 `group(1)`
     —— 冒烟测试第一轮就抓到（`IndexError`），随后补上测试。
 
-### 阶段 3｜文档解析
+### 阶段 3｜文档解析 —— ✅ 已完成（2026-09-15）
 - **产出**：`app/utils/doc/pdf_parser.py`、`html_parser.py`、`text_parser.py`（**无 LLM**）、
   `app/agents/source/doc_digest_agent.py`、`POST /api/agent/source/upload`、
-  `app/services/source_service.py`、上传目录 `uploads/{user_id}/`
+  `app/services/source_service.py`、上传目录 `uploads/{user_id}/{source_uuid}/`
+  （磁盘文件名固定为 `source{白名单后缀}`，原始文件名只存库里的 `display_name`）
   - 同时实现（但到阶段 6 才入图）：`app/agents/merge/requirement_merge.py` ——
     对话摘要 + 四来源冲突消解 → `FinalRequirement`（见 §3.2.1 的划界理由）
 - **要点**：
@@ -746,6 +753,40 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
   - 上传即分配 `@docN`
 - **验收**：真实 PDF / HTML / `.md` / **GBK 编码的 `.txt`** 各一份跑通；扫描版 PDF 报错可复现；
   设计令牌人工核对；**把 `.md` 误判成风格源时被 Python 改回 `content`**；多附件归并正确
+- **实际交付与偏差（2026-09-15）**：
+  - 交付：`app/utils/doc/`（`base.py` / `text_parser.py` / `html_parser.py` / `pdf_parser.py` / `__init__.py`）、
+    `app/agents/source/role_policy.py`、`app/agents/source/doc_digest_agent.py`、
+    `app/agents/merge/requirement_merge.py`、`app/agents/state.py`（+`StyleSpec` / `RequirementDigest` /
+    `RequirementSource` / `FinalRequirement` / `digest_one_line`）、
+    `app/prompts/doc_digest_system.md` / `doc_chunk_digest_system.md` / `requirement_merge_system.md`、
+    `app/utils/agent/source_store.py`、`app/repositories/agent/source_repository.py`、
+    `app/services/source_service.py`、`app/api/agent.py`（+两个接口）、
+    `app/utils/utils_check/check_source_upload.py`、`tests/conftest.py` 与 6 个新测试文件（+161 用例）
+  - **偏差 1：新增 `GET /api/agent/source/list`** —— 计划里只有 upload。理由：消息正文只存 `@doc1`，
+    "别名 → 文件名"的映射在附件表里；没有这个接口，前端（阶段 8）无法渲染 chip，
+    上传的附件在界面上等于不存在。
+  - **偏差 2：`digest_one_line()` 上提到 `state.py`**，`AgentChatService._digest_summary` 改为复用 ——
+    同一条摘要既进提示词又给前端看，两套渲染规则一旦漂移，用户看到的与模型看到的就不一致。
+  - **偏差 3：`_load_attachment_targets` 不再采用请求里的 `role`**（以库里那一行为准）——
+    否则前端带 `role=style` 就能绕过 Python 的能力否决。
+  - **偏差 4：`use_document_style` 由模型判定**（merge 契约里新增的字段）——
+    "是否采用文档风格"是需要理解用户意图的判断（"不要用文档配色"），适合模型；
+    但**说不要时 Python 真的不注入令牌**，避免用户的话被静默忽略。
+  - **偏差 5：digest 结果里的风格结构化取值由 Python 覆盖而非合并** ——
+    模型给的色值一律丢弃（只保留 `notes`）。一个幻觉出来的 `#1e293b` 混进风格规范，
+    会一路传到 web-agent 的提示词里，而风格复刻里"接近但不对"就是错。
+  - **偏差 6：`tests/conftest.py` 覆盖了 pytest 的 `tmp_path`** —— 本机沙箱下
+    `%TEMP%/pytest-of-<user>/` 不可写（`WinError 5`），会让所有用 `tmp_path` 的用例在 setup 阶段报错。
+    改到工作区内的 `tests/.pytest_tmp/`（已 gitignore），用例代码零改动、沙箱内外行为一致。
+  - **实测结论（真实模型 + 真实 HTTP）**：
+    `.md` → `@doc1` / `role=content`，且**要求进了 `constraints`、素材进了 `content_points`**
+    （"需实现「添加」功能""页面必须响应式"没有被当成页面文案）；
+    `.html` → `@doc2` / `role=style`，配色 `['#0f172a', '#e2e8f0']` 与源文件一致（来自解析器）；
+    **两页真实 PDF** → `@doc3` 解析成功；**GBK 的 `.txt`** → `@doc4` 解析成功；
+    扫描版 PDF → **HTTP 200 + `parse_status=failed`**（不是 5xx）；
+    离线段：GBK 解码正确、坏编码明确报错、`.md` 骨架不含代码块里的 `#`、设计令牌六类齐全
+  - **已知代价**：upload 是同步接口，长文档会串行多次模型调用（块预算 4000 字符 / 上限 12 块）；
+    阶段 6 接进 worker 后应改为异步。附件删除 / 重传接口未做（列已就绪，`list_aliases` 已按不可复用实现）
 
 ### 阶段 4｜个人 RAG **占位**（不是实现）
 - **产出**：`agents/rag/need_rag.py`（**真实现**）、`agents/rag/retriever.py`（接口 + 桩 provider）
@@ -871,9 +912,12 @@ uncertainty[]  : 不确定项 / "个人知识库未命中"        ← 把不确�
 | 2026-09-15 | 阶段 2：槽位跨轮累积（真实模型） | 已有 `site_kind=单页展示, features=[添加待办]`，再补"界面要极简一点，白底就行" | 合并结果保留旧槽位，并新抽取到 `style=极简白底` | **通过** —— 证明"新抽取为空时不覆盖旧值"的合并语义有效 |
 | 2026-09-15 | 阶段 2：多轮对话落库与回放（真实 HTTP + PG） | 两轮对话（模糊 → 补齐） | 4 条消息、角色序列 `user/assistant/user/assistant`、顺序正确；会话草稿 summary 正确；`ready_to_generate` 由 false 变 true | **通过** |
 | ✅ | 阶段 2：意图路由 + chat-agent —— **已完成（2026-09-15）** | — | — | — |
+| 2026-09-15 | 阶段 3：解析层（离线，真实字节） | GBK `.txt` / 坏编码 `.txt` / `.md` / HTML / 扫描版 PDF / 手写两页 PDF | GBK 正确解码为 `gb18030`；坏编码**明确报错**（不静默产乱码）；`.md` 骨架不含代码块里的 `#`；HTML 令牌 `#0f172a`/`Inter`/`8px`/`@media×1` 与源文件一致；扫描版与坏 PDF 各自报出可执行的原因 | **通过** —— 解析层脱离模型即可断言，这是"解析与理解分两层"的直接收益 |
+| 2026-09-15 | 阶段 3：上传全链路（真实模型 + 真实 HTTP） | `.md`（需求说明书）/ 设计规范 `.html` / 两页真实 PDF / GBK `.txt` / 扫描版 PDF | `@doc1` content、`@doc2` style（配色取自解析器）、`@doc3`/`@doc4` success；扫描版 **HTTP 200 + `parse_status=failed`**；列表返回别名与文件名 | **通过** —— 要素材/要求分流正确（要求进了 `constraints`），且坏文件不产生 5xx |
+| ✅ | 阶段 3：文档解析 + digest + 上传 + merge —— **已完成（2026-09-15）** | — | — | — |
 | ✅ | 阶段 0：异步骨架 —— **已完成（2026-09-15）**，见上方两条实测记录 | — | — | — |
 | | 阶段 2：意图路由正确率（三类输入） | | | |
-| | 阶段 3：PDF / HTML 解析质量 | | | |
+| 2026-09-15 | 阶段 3：PDF / HTML 解析质量 | 真实两页 PDF / 设计规范 HTML | 见上方两条（解析层与上传全链路） | **通过** |
 | | 阶段 6：模型自主性三层验证 | | | |
 | | 阶段 7：新旧实现对照 | | | |
 

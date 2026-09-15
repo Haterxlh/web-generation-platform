@@ -25,6 +25,12 @@ from app.agents.state import RequirementSlots
 API_BASE = "http://127.0.0.1:8000/api"
 PASSWORD = "probe123456"
 
+# ⚠️ Windows 中文控制台默认编码是 GBK：本脚本会打印 ✅/❌，
+# 在 GBK 控制台（或输出被重定向）时会 UnicodeEncodeError 直接崩掉。
+# 切到 UTF-8 并容错：宁可个别符号显示成问号，也不能让自检跑不完。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 
 # ---------------------------------------------------------------------------
 # 第一段：意图路由（三类输入）

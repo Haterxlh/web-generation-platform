@@ -147,8 +147,8 @@
     2 条 prompt 中文被替换为 `?` 的脏数据（2026-09-13 由命令行客户端发送时降级，与代码和数据库无关）
   - 多文件重试目前仍是"整批重来"；可选改造为**定向补缺**（非严格抽取 + `contents` 合并语义 + 只要求补缺文件）
 
-### 模块：Agent 框架（阶段 0 异步骨架 / 阶段 1 双数据源基座）
-- **状态**：进行中（阶段 0、1、2 已完成；阶段 3~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
+### 模块：Agent 框架（阶段 0~3）
+- **状态**：进行中（阶段 0、1、2、3 已完成；阶段 4~8 与二期 RAG 的方案见 `docs/agent_refactor_plan.md`）
 - **功能范围**：把"同步阻塞到生成结束"的生成接口改成 **Redis 队列 + 独立 arq worker 进程**，
   并引入 **Agent 流水线阶段**（阶段 / 进度 / 明细）供前端轮询展示
 - **已交付内容**：
@@ -199,6 +199,15 @@
     明确需求 → `generate+ready`，5 个槽位全中，单次 1.4~2.0s、`reasoning=0` 证实非思考客户端）
     ② **槽位跨轮累积**（旧槽位保住 + 新抽取的 style 合并进来）
     ③ **多轮对话落库与回放**（真实 HTTP + PG：4 条消息、角色序列与顺序正确、草稿 summary 正确）
+  - **阶段 3（2026-09-15）**：`pytest` **293 个用例全绿**（132 → 新增 161，全程离线、不连模型/库/Redis）；
+    `check_source_upload` 两段全通过 ——
+    ① **解析层离线五项**：GBK `.txt` 正确解码（`encoding=gb18030`）、坏编码明确报错（不是乱码）、
+    `.md` 骨架正确且代码块里的 `#` 不算标题、HTML 设计令牌六类齐全（`#0f172a`/`Inter`/`8px`/`@media×1`，
+    人工核对与源文件一致）、扫描版 PDF 按预期报错、落盘字节与上传一致；
+    ② **HTTP 全链路（真实模型）**：`.md` → `@doc1` / `role=content`（**要求进了 `constraints`，
+    没有混进 `content_points`**）、`.html` → `@doc2` / `role=style` 且配色来自解析器实测值、
+    **真实两页 PDF** → `@doc3` 解析成功、**GBK `.txt`** → `@doc4` 解析成功、
+    扫描版 PDF → **HTTP 200 + `parse_status=failed`**（不是 5xx）、附件列表返回别名与文件名
 - **本轮修复（2026-09-15）**：
   1. **`docker-compose.yml` 的 PG 数据卷路径**（用户实测发现并修正）：
      PG 18+ 镜像期望挂载整个 `/var/lib/postgresql`，并在其下自建 `18/docker` 子目录存放数据；
@@ -247,6 +256,48 @@
   - **Alembic 迁移 `eac80e932e7f`**：给 `agent_session` 加 `draft_requirement`（JSONB 需求草稿）
   - **决策**：`ready` 时不调 chat-agent（确认摘要由槽位唯一确定，省一次调用）；
     router 失败降级**按路径不同**（对话路径 → chat，直达路径 → generate+ready）
+- **阶段 3 交付（2026-09-15）**：
+  - **解析层（无 LLM，可整块离线单测）**：`app/utils/doc/`
+    - `base.py`：`ParsedDocument`（正文 / `native_blocks` 天然分块 / 骨架 / 设计令牌 / 警告）+ `DocParseError`
+    - `text_parser.py`：**编码回退 UTF-8 → GB18030 → 明确报错**（`.txt` / `.md`）；
+      `decode_bytes()` 被 HTML 解析复用，保证同一文件从两个入口读出的结论一致
+    - `html_parser.py`：bs4（标准库 `html.parser`，零额外依赖）→ 正文（先收集 `<style>` 再剥标签）+ 骨架 +
+      **设计令牌**（配色/字体/字号/圆角/间距/布局）；重复与超长行内样式**直接丢弃**并记警告
+    - `pdf_parser.py`：pypdf 按页抽文本；**无文本层（扫描版）明确报错**（阈值 20 字符）；
+      加密 / 无页面 / 坏文件各自给出可执行的中文原因
+    - `__init__.py`：`detect_source_type()`（**扩展名优先于 MIME**）、`parse_document()` 统一入口、
+      `MAX_PARSE_BYTES`（10 MB）、`can_be_style_source()`（**解析器能力判据**）
+  - **契约与角色否决权**：`app/agents/state.py` 新增 `StyleSpec` / `RequirementDigest` /
+    `RequirementSource` / `FinalRequirement` 与共用的 `digest_one_line()`；
+    `app/agents/source/role_policy.py`（纯函数）—— 模型可判 `style`/`both`，
+    但**非 HTML、或没有设计令牌的 HTML 一律否决为 `content`**，并给出可执行的原因
+  - **digest-agent**：`app/agents/source/doc_digest_agent.py` + 两个提示词
+    （`doc_digest_system.md` / `doc_chunk_digest_system.md`）；
+    分块按类型区分（`.txt` / `.md` 单次；PDF / 超长 HTML 走 map-reduce，块预算 4000 字符，
+    超 12 块时**保留首尾 + 显式警告**）；**设计令牌由 Python 覆盖**（模型只写 `style_spec.notes`）；
+    分层降级（单块失败跳过并记警告 → 全部失败退正文片段 → 归并失败用 Python 合并各段结果）
+  - **存储与仓库**：`app/core/storage_config.py` 增加 `uploads_path`；
+    `app/utils/agent/source_store.py`（**展示名与磁盘名分离**：磁盘固定 `source{白名单后缀}`，
+    中文名/空格/`../` 都无法逃出目录）；
+    `app/repositories/agent/source_repository.py`（`list_aliases` **刻意包含已删除行** —— 别名不可复用）
+  - **接口**：`POST /api/agent/source/upload`（multipart）与 `GET /api/agent/source/list`；
+    `app/services/source_service.py`（**先入库再解析**：`pending → parsing → success/failed`；
+    别名冲突靠 `UNIQUE(session_id, alias)` + 重试；解析/理解失败返回 `parse_status=failed` 而非 5xx）
+  - **merge 节点（阶段 3 实现、阶段 6 才入图）**：`app/agents/merge/requirement_merge.py` +
+    `requirement_merge_system.md` —— 四来源按优先级冲突消解 → `FinalRequirement`；
+    `sources` 证据与风格令牌由 **Python** 生成；`use_document_style=false` 时**真的不注入**文档令牌；
+    槽位"只增不减"（复用 `RequirementSlots.merged_with` 语义）
+  - **配套**：`.gitignore` 增加 `uploads/` 与 `**/.pytest_tmp/`；新增 `tests/conftest.py`
+    把 `tmp_path` 重定向到工作区内（本机沙箱下系统临时目录不可写）；
+    新增 `check_source_upload.py` 自检脚本（离线解析段 + 真实 HTTP/模型段）；
+    顺手修掉 `check_agent_chat.py` 在 GBK 控制台打印 emoji 时 `UnicodeEncodeError` 崩溃的问题
+  - **偏差 / 计划外增补**（均已在上方写明理由）：
+    1. **新增 `GET /api/agent/source/list`**（计划里只有 upload）—— 消息正文只存 `@doc1`，
+       没有它前端无法把别名渲染成文件名 chip，附件会"传了但看不见"；
+    2. `digest_one_line()` 上提到 `state.py`，`AgentChatService._digest_summary` 改为复用，
+       避免"进提示词的摘要"与"给前端看的摘要"两套渲染规则漂移；
+    3. `_load_attachment_targets` 不再读请求里的 `role`（以库里那一行为准）——
+       否则前端可带 `role=style` 绕过 Python 的能力否决
 - **待办与遗留**：
   - ✅ **`npm run lint` / `tsc -b` / `npm run build` 已于 2026-09-15 全部通过**；此前 2 个 `react-hooks/set-state-in-effect` 报错（位于
     `hooks/AuthProvider.tsx` 与 `pages/Projects/ProjectsPage.tsx`）已修复，详见上方"本轮修复（2026-09-15）"
@@ -254,6 +305,17 @@
   - 进度只到"阶段级"，尚无 SSE 实时推送（当前靠前端轮询，间隔 1500ms）
   - 产物落本地磁盘 + worker 独立进程 = **单机假设**；将来 worker 与 API 分机器部署必须换对象存储
   - API 与 worker 需**分别启动**，目前仅靠 `USEFUL_COMMAND.md` 说明，未做进程守护 / 一键脚本
+  - **阶段 3 遗留**：
+    - `POST /api/agent/source/upload` 是**同步**接口：理解长文档会串行多次模型调用
+      （块预算 4000 字符、上限 12 块），耗时随篇幅增长；阶段 6 接进 worker 编排图后应改为异步
+    - **附件删除 / 重传 / 重新解析接口未做**（只上传与列表）：`is_delete` 与 `parse_status` 列已就绪，
+      且 `list_aliases` 已按"别名不复用"实现，补接口时不必改数据模型
+    - **merge 节点已实现并单测，但尚未入图**（按计划到阶段 6；阶段 4 的 RAG 结果也是它的输入之一）
+    - 上传附件目前**只落本地磁盘**（`uploads/`），与产物同一"单机假设"：将来换对象存储要一起迁移
+    - 自检与端到端验证在库里留下若干临时账号（`agent*` / `src*`）与其会话/附件行，
+      以及 `backend-uv-fastapi/uploads/{user_id}/...` 下的文件（已被 gitignore，如需清理请手动处理）
+    - `check_source_upload.py` 的 PDF 造数（`_text_pdf`）与 `tests/test_doc_parsers.py` 的
+      `_build_text_pdf` 是两份等价实现：自检脚本刻意不 import 测试代码，若将来 PDF 造数逻辑变化需同步改两处
 
 ## 2. 项目级约定（跨模块通用）
 - 后端分层调用方向：`api → services → repositories → 数据库`，禁止跨层调用；LLM 编排统一放 `agents/`
@@ -263,16 +325,22 @@
 - 数据库操作一律 ORM/参数化，禁止拼接 SQL；只连本地业务库
 - 若接入 MySQL：绝不操作 `mysql`、`sys`、`performance_schema` 等系统库
 - docstring 采用 Google 风格
-- `app/utils/` 按用途分子包（`db` / `jwt` / `weg_gen` / `utils_check`），不再平铺新文件
+- `app/utils/` 按用途分子包（`db` / `jwt` / `weg_gen` / `agent` / `doc` / `utils_check`），不再平铺新文件
+- **文档解析的统一口径**（阶段 3 起）：文本类编码按 **UTF-8 → GB18030 → 明确报错** 回退；
+  类型判断**扩展名优先于 MIME**；`app/utils/doc/__init__.py` 是"支持哪些类型 / 谁能当风格源"的唯一真源
+- **附件别名**：形如 `@docN`，作用域是会话（`UNIQUE(session_id, alias)`），**不可重命名、不可复用**；
+  消息里只存别名，**绝不存文件正文或磁盘路径**；别名进 prompt 前必须过白名单校验
+- **上传附件与生成产物分开存放**（`uploads/` ↔ `generated/`），两者都已 gitignore；
+  上传文件的**展示名（原名）与磁盘名（`source{后缀}`）分离**，磁盘名永远由后端决定
 
 ## 3. 下一步计划（按优先级）
 - [x] **Agent 框架阶段 2**（已完成 2026-09-15，见上方模块进度）
-- [ ] **Agent 框架阶段 3**：文档解析 —— `utils/doc/` 的 `pdf_parser.py` / `html_parser.py` / `text_parser.py`
-      （**无 LLM**；支持 `.pdf` / `.html` / `.htm` / `.txt` / `.md`，`.txt` 需 UTF-8→GB18030 编码回退）、
-      `digest-agent`（**仅文件** → `RequirementDigest`，含 content/style/both 判定，
-      **但只有 HTML 能当风格源**，其余类型由 Python 强制为 content；
-      上传文件仍须配一句话，`message` 保持必填）、`merge`（对话摘要 + 四来源冲突消解 → `FinalRequirement`）、
-      `POST /api/agent/source/upload`（阶段 3 实现、阶段 6 入图）（归属：Agent 框架）
+- [x] **Agent 框架阶段 3**（已完成 2026-09-15）：文档解析 + digest-agent + 上传接口 + merge 节点
+      （merge 已实现并单测，**阶段 6 才入图**；见上方模块进度）
+- [ ] **Agent 框架阶段 4**：个人 RAG **占位** —— `agents/rag/need_rag.py`（真实现，三态
+      `hit`/`miss`/`skipped`）、`agents/rag/retriever.py`（接口 + 桩 provider，一期恒 `skipped`）；
+      `requirement_merge` 已把 RAG 当作第 4 个来源（`rag_context` 恒空时不留证据、不产生不确定项），
+      **二期只替换 provider，不动图结构、不动 prompt 骨架**（归属：Agent 框架）
 - [ ] 生成进度体验：把轮询升级为**流式输出（SSE）**；轮询版已在阶段 0 落地（进度条 + 已等待计时）（归属：生成模块 / frontend-react）
 - [ ] 补全 pytest：用假模型覆盖图的重试分支与截断分支、service 状态流转（`build_multi_file_graph(model=..., planner=...)` 是现成注入点）（归属：生成模块）
 - [ ] 验证 `DEEPSEEK_REASONING_EFFORT` 是否真的生效（同需求 low / max 各跑一次，比对 `reasoning_tokens`）（归属：大模型接入）
@@ -309,6 +377,18 @@
   配套：`AgentStage` 增加 `CLARIFYING`，僵尸回收增加 `exclude_stages` 以跳过暂停态；
   新增 `check_agent_chat.py` 与 67 个离线用例（共 132 个）；
   修掉一个真 bug：`_SAFE_ALIAS_RE` 漏捕获组导致 `parse_alias_index` IndexError
+- **2026-09-15（Agent 框架阶段 3）**：落地**文档解析 → 理解 → 上传**与 merge 节点 ——
+  `utils/doc/`（`base` / `text_parser` / `html_parser` / `pdf_parser` / 统一入口，**无 LLM**；
+  `.txt` 走 UTF-8→GB18030 回退、扫描版 PDF 明确报错、HTML 抽设计令牌）、
+  `agents/source/role_policy.py`（只有 HTML 能当风格源，非 HTML 的 style 判定被 Python 否决）、
+  `agents/source/doc_digest_agent.py`（分块理解 + map-reduce；**设计令牌由 Python 覆盖**，模型只写 notes）、
+  `agents/state.py`（+`StyleSpec` / `RequirementDigest` / `RequirementSource` / `FinalRequirement` / `digest_one_line`）、
+  `agents/merge/requirement_merge.py`（四来源冲突消解；**阶段 6 才入图**）、
+  `utils/agent/source_store.py`（展示名与磁盘名分离）、`repositories/agent/source_repository.py`、
+  `services/source_service.py`、`api/agent.py`（`POST /source/upload` + `GET /source/list`）、
+  三个提示词；新增 `check_source_upload.py` 与 **161 个离线用例（共 293 个）**；
+  配套：`.gitignore` 增加 `uploads/`、`tests/conftest.py` 重定向 `tmp_path`、
+  修掉 `check_agent_chat.py` 在 GBK 控制台打印 emoji 崩溃的问题
 
 ## 4. 相关文档
 - 问答记录：`docs/QA.md`（已积累 Q1–Q24）

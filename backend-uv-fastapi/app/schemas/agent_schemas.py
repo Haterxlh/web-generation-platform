@@ -90,3 +90,64 @@ class AgentSessionDetailResponse(BaseModel):
     slots: RequirementSlotsOut = Field(description="会话级需求草稿的槽位")
     summary: str = Field(default="", description="会话级需求草稿的一句话摘要")
     messages: list[AgentMessageOut] = Field(default_factory=list, description="消息列表（旧→新）")
+
+
+class StyleSpecOut(BaseModel):
+    """风格规范（响应白名单，与 agents/state.py 的 StyleSpec 对齐）。
+
+    ⚠️ 结构化取值来自**解析器的实测统计**，不是模型转述 —— 它们可以直接当作
+    "这个页面用什么配色/字体"的事实依据。
+    """
+
+    colors: list[str] = Field(default_factory=list, description="配色（按出现频次排序）")
+    font_families: list[str] = Field(default_factory=list, description="字体族")
+    font_sizes: list[str] = Field(default_factory=list, description="字号阶梯")
+    border_radius: list[str] = Field(default_factory=list, description="圆角")
+    spacing: list[str] = Field(default_factory=list, description="间距")
+    layout: dict[str, int] = Field(default_factory=dict, description="布局统计")
+    notes: str = Field(default="", description="模型对风格意图的文字描述")
+
+
+class RequirementDigestOut(BaseModel):
+    """文档理解结果（响应白名单，与 agents/state.py 的 RequirementDigest 对齐）。"""
+
+    summary: str = Field(default="", description="一句话说明这份文档是什么")
+    role: Literal["content", "style", "both"] = Field(description="角色：内容源/风格源/两者都是")
+    content_points: list[str] = Field(default_factory=list, description="可用作页面内容的素材")
+    style_spec: StyleSpecOut = Field(default_factory=StyleSpecOut, description="风格规范")
+    constraints: list[str] = Field(default_factory=list, description="文档提出的硬要求")
+    open_questions: list[str] = Field(default_factory=list, description="需要向用户确认的点")
+
+
+class SourceUploadResponse(BaseModel):
+    """附件上传结果。
+
+    ``parse_status=failed`` **不是** HTTP 错误：上传本身成功了（文件已落盘、别名已分配），
+    只是解析/理解失败。前端应展示 ``parse_error`` 并允许用户继续对话 ——
+    核心链路不能被一个坏文件拖垮（见 docs/agent_refactor_plan.md §3.8.6）。
+    """
+
+    source_uuid: str = Field(description="附件唯一标识（对话里引用它）")
+    alias: str = Field(description="会话内别名（形如 @doc1），前端渲染成 chip")
+    display_name: str | None = Field(default=None, description="原始文件名（仅用于展示）")
+    size_bytes: int = Field(description="文件大小（字节）")
+    role: Literal["content", "style", "both"] = Field(description="最终生效的角色")
+    parse_status: Literal["success", "failed"] = Field(description="解析状态")
+    parse_error: str | None = Field(default=None, description="解析失败原因（面向用户）")
+    digest: RequirementDigestOut | None = Field(default=None, description="文档理解结果")
+    degraded: bool = Field(default=False, description="是否走了降级路径（解析或理解失败）")
+    warnings: list[str] = Field(default_factory=list, description="非致命问题（不静默降级）")
+    usage: AgentUsageOut = Field(default_factory=AgentUsageOut, description="理解消耗的 token")
+
+
+class SourceOut(BaseModel):
+    """会话里的一个附件（列表用，只给展示需要的字段）。"""
+
+    source_uuid: str = Field(description="附件唯一标识")
+    alias: str = Field(description="会话内别名（形如 @doc1）")
+    display_name: str | None = Field(default=None, description="原始文件名")
+    role: Literal["content", "style", "both"] = Field(description="角色")
+    parse_status: str = Field(description="解析状态：pending/parsing/success/failed")
+    parse_error: str | None = Field(default=None, description="解析失败原因")
+    size_bytes: int | None = Field(default=None, description="文件大小（字节）")
+    digest_summary: str | None = Field(default=None, description="一行理解摘要")

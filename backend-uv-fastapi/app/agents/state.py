@@ -6,8 +6,9 @@
 #
 # 约定：本模块是**纯声明**，不含任何 LLM 调用与 IO —— 因此它可以被任何层安全 import。
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -184,3 +185,254 @@ class ChatResult(BaseModel):
     reply: str = ""
     degraded: bool = False
     usage: ModelUsage = Field(default_factory=ModelUsage)
+
+
+def digest_one_line(value: "RequirementDigest | Mapping[str, Any] | None") -> str | None:
+    """把结构化 digest 压成**一行**短摘要（附件在提示词里就显示这一行）。
+
+    为什么放在这里而不是各 service 各写一份：附件摘要既要进提示词（对话里的 ``@doc1`` 展开），
+    也要回给前端展示。两处渲染规则一旦漂移，用户看到的内容与模型看到的就不一致了 ——
+    而"模型看到的"才是决定产出质量的那个。
+
+    输入同时接受 ``RequirementDigest`` 与**数据库里取出的 dict**（JSONB 列读回来就是 dict）。
+
+    Args:
+        value: digest 对象 / 字典；None 或空表示尚未解析。
+
+    Returns:
+        一行摘要；没有任何内容时返回 None（渲染成"尚未解析"）。
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, RequirementDigest):
+        digest = value.model_dump()
+    else:
+        digest = dict(value)
+
+    bits: list[str] = []
+    content_points = digest.get("content_points") or []
+    if content_points:
+        bits.append("内容要点：" + "、".join(str(item) for item in content_points[:5]))
+    style_spec = digest.get("style_spec") or {}
+    if isinstance(style_spec, Mapping) and style_spec:
+        flat = [
+            f"{key}={value}" if not isinstance(value, list) else f"{key}={'/'.join(str(v) for v in value[:3])}"
+            for key, value in list(style_spec.items())[:5]
+            if value
+        ]
+        if flat:
+            bits.append("风格：" + "，".join(flat))
+    constraints = digest.get("constraints") or []
+    if constraints:
+        bits.append("约束：" + "、".join(str(item) for item in constraints[:5]))
+    return "；".join(bits) or None
+
+
+class StyleSpec(BaseModel):
+    """从一份文档里提炼出的风格规范（阶段 3 起使用）。
+
+    两类字段的来源**刻意不同**，这是本模型最重要的设计：
+
+    - 结构化的取值（``colors`` / ``font_families`` / ``font_sizes`` / ``border_radius`` /
+      ``spacing`` / ``layout``）来自**解析器的实测统计**（``ParsedDocument.design_tokens``），
+      **不由模型填写**。理由：这些是事实（页面里确实写了 ``#0f172a``），
+      让模型转述一遍只会引入幻觉 —— "看起来像 #1e293b" 这种偏差在风格复刻里是致命的。
+    - ``notes`` 才是模型的地盘：把"深色底 + 大圆角 + 无衬线"这类**意图**说清楚。
+    """
+
+    colors: list[str] = Field(default_factory=list, description="配色（按出现频次排序）")
+    font_families: list[str] = Field(default_factory=list, description="字体族")
+    font_sizes: list[str] = Field(default_factory=list, description="字号阶梯")
+    border_radius: list[str] = Field(default_factory=list, description="圆角")
+    spacing: list[str] = Field(default_factory=list, description="间距")
+    layout: dict[str, int] = Field(
+        default_factory=dict, description="布局统计（display 取值次数 / 媒体查询数量）"
+    )
+    notes: str = Field(default="", description="模型对风格意图的文字描述")
+
+    @classmethod
+    def from_design_tokens(cls, tokens: Mapping[str, Any] | None, notes: str = "") -> "StyleSpec":
+        """把解析器抽出的设计令牌映射成本模型（**只做搬运，不做猜测**）。
+
+        Args:
+            tokens: ``ParsedDocument.design_tokens``；可以为 None 或空。
+            notes: 模型补充的风格描述。
+
+        Returns:
+            风格规范；未知的键被忽略（解析器将来加字段不会让这里报错）。
+        """
+        data = dict(tokens or {})
+        layout = data.get("layout")
+        return cls(
+            colors=[str(item) for item in data.get("colors") or []],
+            font_families=[str(item) for item in data.get("font_families") or []],
+            font_sizes=[str(item) for item in data.get("font_sizes") or []],
+            border_radius=[str(item) for item in data.get("border_radius") or []],
+            spacing=[str(item) for item in data.get("spacing") or []],
+            layout={str(k): int(v) for k, v in layout.items()} if isinstance(layout, Mapping) else {},
+            notes=notes,
+        )
+
+    def is_empty(self) -> bool:
+        """是否没有任何可用的风格信息（用于判"这份 digest 到底给没给风格"）。"""
+        return not any(
+            (self.colors, self.font_families, self.font_sizes,
+             self.border_radius, self.spacing, self.layout, self.notes.strip())
+        )
+
+
+class RequirementSource(BaseModel):
+    """一条需求的**来源证据**（用于追溯"这句话是从哪来的"）。
+
+    阶段 3 的 merge 节点产出它，`FinalRequirement` 带着它一路传到 plan 与 web-agent。
+
+    为什么必须显式记录：需求冲突时（用户说"极简"，文档给"深色大面积渐变"）
+    最终采信了谁、依据是什么，只能靠这张清单回答。没有它，
+    事后排查只能重新跑一遍模型 —— 那是最贵也最不可靠的方式。
+    """
+
+    kind: Literal["user", "chat", "doc", "rag"] = Field(
+        description="来源类型：用户本轮原话 / 对话澄清摘要 / 上传文档 / 个人知识库"
+    )
+    ref: str = Field(description="来源标识（用户原话片段 / @doc1 / 文档名 / 知识库片段 id）")
+    note: str = Field(default="", description="补充说明（如文档文件名、该来源的角色）")
+
+
+class FinalRequirement(BaseModel):
+    """需求装配的最终产物（阶段 3 的 merge 节点产出，阶段 5/6 消费）。
+
+    它是"四来源冲突消解之后"的**唯一一份需求**：用户显式要求、对话澄清摘要、
+    文档 digest（内容 + 风格）、个人知识库检索结果，都在这里收敛。
+
+    为什么不把四个来源原样丢给 web-agent：那样它只能临场裁决，
+    而那个裁决既不可观测、也无法回归测试（§3.5 的理由）。
+
+    两个刻意保留的字段：
+
+    - ``sources``：证据可追溯（谁说的、从哪来的）；
+    - ``uncertainty``：**把不确定性显式传给下游**。RAG 未命中、文档没说清的地方
+      绝不能沉默 —— 沉默会被下游当成"用户资料里没有"，然后编一个出来。
+    """
+
+    summary: str = Field(default="", description="一段人可读的需求陈述")
+    slots: RequirementSlots = Field(default_factory=RequirementSlots, description="需求槽位")
+    content_points: list[str] = Field(default_factory=list, description="来自文档的内容素材")
+    style_spec: StyleSpec = Field(default_factory=StyleSpec, description="来自文档的风格规范")
+    constraints: list[str] = Field(default_factory=list, description="硬约束")
+    sources: list[RequirementSource] = Field(default_factory=list, description="来源证据")
+    uncertainty: list[str] = Field(default_factory=list, description="不确定项")
+
+    def as_prompt_text(self) -> str:
+        """渲染成一段"给模型看"的最终需求（plan / web-agent 的输入）。
+
+        Returns:
+            多段文本；空的部分写"（无）"，避免下游误以为漏读。
+        """
+
+        def _lines(items: list[str]) -> str:
+            return "\n".join(f"- {item}" for item in items) if items else "（无）"
+
+        parts = [
+            "【需求概述】\n" + (self.summary.strip() or "（无）"),
+            "【槽位】\n" + self.slots.model_dump_json(),
+        ]
+        if self.content_points:
+            parts.append("【内容素材】\n" + _lines(self.content_points))
+        if self.constraints:
+            parts.append("【硬约束】\n" + _lines(self.constraints))
+        if not self.style_spec.is_empty():
+            style = self.style_spec
+            style_lines: list[str] = []
+            if style.colors:
+                style_lines.append("配色：" + "、".join(style.colors))
+            if style.font_families:
+                style_lines.append("字体：" + "、".join(style.font_families))
+            if style.font_sizes:
+                style_lines.append("字号：" + "、".join(style.font_sizes))
+            if style.border_radius:
+                style_lines.append("圆角：" + "、".join(style.border_radius))
+            if style.spacing:
+                style_lines.append("间距：" + "、".join(style.spacing))
+            if style.layout:
+                style_lines.append(
+                    "布局：" + "、".join(f"{key}×{value}" for key, value in style.layout.items())
+                )
+            if style.notes.strip():
+                style_lines.append("说明：" + style.notes.strip())
+            parts.append("【风格规范】\n" + "\n".join(f"- {line}" for line in style_lines))
+        if self.uncertainty:
+            parts.append("【不确定项（需谨慎，不要凭空编造）】\n" + _lines(self.uncertainty))
+        return "\n\n".join(parts)
+
+
+class RequirementDigest(BaseModel):
+    """一份文档的"理解结果"（digest-agent 的结构化输出，阶段 3 起使用）。
+
+    它是**文件维度**的产物（一份文件一份 digest），与"对话维度"的需求草稿
+    （``RequirementDraft``）分开存放：文件不变，digest 可以算一次缓存进
+    ``generation_source.digest`` 跨轮复用；而对话每轮都在变，必须每轮重算。
+    这就是把 digest 与 merge 拆成两个节点的原因（见 docs/agent_refactor_plan.md §3.2.1）。
+
+    ⚠️ ``constraints`` 与 ``content_points`` 的区分是本模型的关键（阶段 3 增补的约定）：
+    ``.md`` / ``.txt`` 常常本身就是**需求说明书**（"要有登录""必须响应式"）。
+    若把这类"对网页的要求"塞进 ``content_points``，下游 web-agent 会把要求当成页面文案
+    印在页面上。所以：**要求 → constraints，素材 → content_points**。
+
+    Attributes:
+        summary: 一句话说明这份文档是什么（给 merge 与排查用）。
+        role: 该文档在本次生成中的角色（已由 Python 侧按解析器能力否决过）。
+        content_points: 可直接用作页面内容 / 文案的素材要点。
+        style_spec: 风格规范（只有 HTML 能给出结构化取值）。
+        constraints: 文档里提出的硬要求（必须遵守）。
+        open_questions: 文档没说清、需要向用户确认的点。
+    """
+
+    summary: str = Field(default="", description="一句话说明这份文档是什么")
+    role: Literal["content", "style", "both"] = Field(
+        default="content", description="角色：内容源 / 风格源 / 两者都是"
+    )
+    content_points: list[str] = Field(default_factory=list, description="可用作页面内容的素材要点")
+    style_spec: StyleSpec = Field(default_factory=StyleSpec, description="风格规范")
+    constraints: list[str] = Field(default_factory=list, description="文档提出的硬要求")
+    open_questions: list[str] = Field(default_factory=list, description="需要向用户确认的点")
+
+    def as_prompt_text(self) -> str:
+        """渲染成一段"给模型看"的文本（merge 阶段把它拼进需求装配的上下文）。
+
+        Returns:
+            多段文本；空 digest 也会明确写出"（无）"，避免下游以为漏读了。
+        """
+
+        def _lines(items: list[str]) -> str:
+            return "\n".join(f"- {item}" for item in items) if items else "（无）"
+
+        parts = [
+            f"【角色】{self.role}",
+            f"【概述】{self.summary or '（无）'}",
+            "【内容素材】\n" + _lines(self.content_points),
+            "【硬要求】\n" + _lines(self.constraints),
+        ]
+        if not self.style_spec.is_empty():
+            style = self.style_spec
+            style_lines: list[str] = []
+            if style.colors:
+                style_lines.append("配色：" + "、".join(style.colors))
+            if style.font_families:
+                style_lines.append("字体：" + "、".join(style.font_families))
+            if style.font_sizes:
+                style_lines.append("字号：" + "、".join(style.font_sizes))
+            if style.border_radius:
+                style_lines.append("圆角：" + "、".join(style.border_radius))
+            if style.spacing:
+                style_lines.append("间距：" + "、".join(style.spacing))
+            if style.layout:
+                style_lines.append(
+                    "布局：" + "、".join(f"{key}×{value}" for key, value in style.layout.items())
+                )
+            if style.notes.strip():
+                style_lines.append("说明：" + style.notes.strip())
+            parts.append("【风格规范】\n" + "\n".join(f"- {line}" for line in style_lines))
+        if self.open_questions:
+            parts.append("【待确认】\n" + _lines(self.open_questions))
+        return "\n\n".join(parts)

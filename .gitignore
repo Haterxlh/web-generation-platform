@@ -83,6 +83,8 @@ Thumbs.db
 **/*$py.class
 **/*.so
 **/.pytest_cache/
+# 用例用的临时目录（tests/conftest.py 把 tmp_path 指到这里，避开受限的系统临时目录）
+**/.pytest_tmp/
 **/.coverage
 **/htmlcov/
 **/.tox/
@@ -96,8 +98,10 @@ Thumbs.db
 **/ENV/
 **/env/
 
-# ========== 后端：AI 生成产物（运行产物，不入库）==========
+# ========== 后端：AI 生成产物与用户上传附件（运行产物，不入库）==========
 generated/
+# 用户上传的原始附件（PDF / HTML / Markdown 等）：含用户数据，绝不入库
+uploads/
 
 # ========== 其他 ==========
 commit_msg.txt

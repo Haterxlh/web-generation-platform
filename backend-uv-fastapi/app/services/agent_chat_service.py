@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.chat import chat_agent
 from app.agents.router import intent_router
-from app.agents.state import RequirementDraft, RequirementSlots
+from app.agents.state import RequirementDraft, RequirementSlots, digest_one_line
 from app.models.agent import AgentMessage, AgentSession, GenerationSource
 from app.repositories.agent import AgentMessageRepository, AgentSessionRepository
 from app.schemas.agent_schemas import (
@@ -237,7 +237,10 @@ class AgentChatService:
         if not req.attachments:
             return []
 
-        wanted = {item.source_uuid: item.role for item in req.attachments}
+        # 只要 uuid 在集合里就说明"这个附件确实属于本会话"；
+        # 角色一律以**库里那一行**为准（它已经过 Python 侧的能力否决），
+        # 不用请求里带的 role —— 否则前端可以绕过否决，把 .md 说成风格源
+        wanted = {item.source_uuid for item in req.attachments}
         stmt = select(GenerationSource).where(
             GenerationSource.user_id == user_id,
             GenerationSource.session_id == session.id,
@@ -252,40 +255,11 @@ class AgentChatService:
                     source_uuid=source.source_uuid,
                     display_name=source.display_name,
                     role=source.role,
-                    digest=AgentChatService._digest_summary(source.digest),
+                    digest=digest_one_line(source.digest),
                     available=True,
                 )
             )
         return targets
-
-    @staticmethod
-    def _digest_summary(digest: dict | None) -> str | None:
-        """把结构化 digest 压成一行短摘要（给 prompt 用）。
-
-        阶段 3 才会有真实 digest；这里先做最朴素的拼装，
-        不引入额外模型调用 —— 摘要本身的"提炼"工作已经在 digest 阶段做过了。
-
-        Args:
-            digest: RequirementDigest 的字典形式。
-
-        Returns:
-            一行摘要；没有内容时返回 None（渲染成"尚未解析"）。
-        """
-        if not digest:
-            return None
-        bits: list[str] = []
-        content_points = digest.get("content_points") or []
-        if content_points:
-            bits.append("内容要点：" + "、".join(str(x) for x in content_points[:5]))
-        style_spec = digest.get("style_spec") or {}
-        if style_spec:
-            bits.append(
-                "风格：" + "，".join(f"{k}={v}" for k, v in list(style_spec.items())[:5])
-            )
-        constraints = digest.get("constraints") or []
-        if constraints:
-            bits.append("约束：" + "、".join(str(x) for x in constraints[:5]))
-        return "；".join(bits) or None
 
     @staticmethod
     def _build_history(
